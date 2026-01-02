@@ -17,6 +17,15 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
 
+    //AWS SDK
+    implementation platform('software.amazon.awssdk:bom:2.25.64')
+    implementation 'software.amazon.awssdk:dynamodb'
+    implementation 'software.amazon.awssdk:sqs'
+
+    implementation 'software.amazon.awssdk:apache-client'
+
+    implementation 'me.paulschwarz:spring-dotenv:4.0.0'
+
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 
