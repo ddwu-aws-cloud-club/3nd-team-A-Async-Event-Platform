@@ -14,7 +14,7 @@
 
 시스템 아키텍처를 설명한다.
 
-<img width="1536" height="1024" alt="Image" src="https://github.com/user-attachments/assets/e618de17-8019-4638-842b-f037a889550b" />
+<img width="1536" height="1024" alt="Image" src="https://github.com/user-attachments/assets/d284fdd5-4594-4783-8efb-bc57178dff82" />
 
 ### 설계 목표
 
