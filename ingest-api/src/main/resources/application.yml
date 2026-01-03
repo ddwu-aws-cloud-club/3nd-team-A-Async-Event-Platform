@@ -1,0 +1,28 @@
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+aws:
+  region: ${AWS_REGION:ap-northeast-2}
+<<<<<<< Updated upstream
+profile: wish
+=======
+  profile: hyeyun
+>>>>>>> Stashed changes
+  dynamodb:
+    table-name: ${DDB_TABLE_NAME:AsyncEventTable}
+  sqs:
+    queue-url: ${SQS_QUEUE_URL:https://sqs.ap-northeast-2.amazonaws.com/590807098068/AsyncEventMainQueue}
+
+logging:
+  level:
+    root: INFO
+    software.amazon.awssdk: INFO
+    com.team.async: DEBUG
+
+ddb:
+  table-name: AsyncEventTable
