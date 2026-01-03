@@ -8,7 +8,7 @@ management:
         include: health,info
 aws:
   region: ${AWS_REGION:ap-northeast-2}
-  profile: wish //여기 iam 롤에 맞춰 변경!
+profile: wish
   dynamodb:
     table-name: ${DDB_TABLE_NAME:AsyncEventTable}
   sqs:
@@ -19,3 +19,6 @@ logging:
     root: INFO
     software.amazon.awssdk: INFO
     com.team.async: DEBUG
+
+ddb:
+  table-name: AsyncEventTable

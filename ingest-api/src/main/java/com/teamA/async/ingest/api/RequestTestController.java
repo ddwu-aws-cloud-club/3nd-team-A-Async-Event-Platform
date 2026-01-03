@@ -3,6 +3,8 @@ package com.teamA.async.ingest.api;
 import com.teamA.async.common.domain.model.RequestItem;
 import com.teamA.async.common.domain.enums.RequestStatus;
 import lombok.RequiredArgsConstructor;
+// import lombok.Value;  <-- 이거 지우세요!
+import org.springframework.beans.factory.annotation.Value; // <-- 이걸 추가하세요!
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -19,10 +21,12 @@ public class RequestTestController {
 
     private final DynamoDbEnhancedClient enhancedClient;
 
+    @Value("${aws.dynamodb.table-name}")
+    private String tableName;
+
     // Postman에서 호출할 주소: POST http://localhost:8080/test/requests
     @PostMapping("/test/requests")
     public RequestItem createTestRequest(@RequestBody Map<String, String> body) {
-
         // 1. Postman Body에서 데이터 꺼내기
         String userId = body.get("userId");
         String eventId = body.get("eventId");
@@ -34,17 +38,17 @@ public class RequestTestController {
                 .eventId(eventId)
                 .requestId(requestId)
                 .status(RequestStatus.RECEIVED)
-                .queuedAt(System.currentTimeMillis()) // 현재 시간
+                .requestedAt(System.currentTimeMillis())
                 .build();
 
-        // ✅ 3. 핵심: 여기서 키 생성 로직이 잘 도는지 테스트됨!
+        // 3. 키 생성
         item.generateKeys();
 
-        // 4. DynamoDB에 저장 (테이블 이름: AsyncEventTable 가정)
-        DynamoDbTable<RequestItem> table = enhancedClient.table("AsyncEventTable", TableSchema.fromBean(RequestItem.class));
+        // 4. DynamoDB에 저장
+        DynamoDbTable<RequestItem> table = enhancedClient.table(tableName, TableSchema.fromBean(RequestItem.class));
         table.putItem(item);
 
-        // 5. 결과 반환 (PK, SK가 잘 채워졌는지 JSON으로 확인)
+        // 5. 결과 반환
         return item;
     }
 }
