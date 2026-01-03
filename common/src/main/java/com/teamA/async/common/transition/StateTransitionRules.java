@@ -16,8 +16,11 @@ public final class StateTransitionRules {
     private static final Map<RequestStatus, Set<RequestStatus>> ALLOWED = new EnumMap<>(RequestStatus.class);
 
     static {
-        // RECEIVED -> QUEUED
-        ALLOWED.put(RequestStatus.RECEIVED, EnumSet.of(RequestStatus.QUEUED));
+        // RECEIVED -> QUEUED | FAILED_FINAL
+        ALLOWED.put(
+                RequestStatus.RECEIVED,
+                EnumSet.of(RequestStatus.QUEUED, RequestStatus.FAILED_FINAL)
+        );
 
         // QUEUED -> PROCESSING
         ALLOWED.put(RequestStatus.QUEUED, EnumSet.of(RequestStatus.PROCESSING));
