@@ -21,6 +21,13 @@ dependencies {
 
     implementation 'org.springframework.boot:spring-boot-starter-json'
 
+    // AWS SDK v2 - SQS
+    implementation 'software.amazon.awssdk:sqs'
+    implementation "software.amazon.awssdk:dynamodb"
+    implementation 'software.amazon.awssdk:regions'
+    // JSON time module
+    implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
+
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
 

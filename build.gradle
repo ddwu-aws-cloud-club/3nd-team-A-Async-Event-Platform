@@ -14,6 +14,14 @@ subprojects {
 	repositories {
 		mavenCentral()
 	}
+	//워커 client config 구현시 버전 충돌 오류로 인해 추가
+	apply plugin: 'io.spring.dependency-management'
+	dependencyManagement {
+		imports {
+			mavenBom "software.amazon.awssdk:bom:2.25.18"
+		}
+	}
+
 }
 allprojects {
 	repositories {

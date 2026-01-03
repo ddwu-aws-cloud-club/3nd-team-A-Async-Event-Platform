@@ -3,4 +3,4 @@ ddb:
 
 aws:
   region: ap-northeast-2
-  profile: wish
+  profile: hyeyun
