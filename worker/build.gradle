@@ -13,13 +13,8 @@ java {
 dependencies {
     implementation project(':common')
 
-    implementation platform('software.amazon.awssdk:bom:2.29.0')
-    implementation 'software.amazon.awssdk:dynamodb'
-
     implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
-
-    implementation 'org.springframework.boot:spring-boot-starter-json'
 
     compileOnly 'org.projectlombok:lombok'
     annotationProcessor 'org.projectlombok:lombok'
