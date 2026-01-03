@@ -17,9 +17,15 @@ import software.amazon.awssdk.enhanced.dynamodb.Key;
 import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
 import software.amazon.awssdk.enhanced.dynamodb.model.Page;
 import software.amazon.awssdk.enhanced.dynamodb.model.QueryConditional;
+import software.amazon.awssdk.enhanced.dynamodb.Expression;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.awssdk.enhanced.dynamodb.model.QueryEnhancedRequest;
+import software.amazon.awssdk.enhanced.dynamodb.DynamoDbIndex;
 
 import java.util.List;
 import java.util.stream.Collectors;
+
+import static tools.jackson.databind.type.LogicalType.Map;
 
 @RestController
 @RequiredArgsConstructor
@@ -73,12 +79,26 @@ public class RequestQueryController {
                 .partitionValue(DdbKeyFactory.userPk(userId))
                 .build();
 
+        // QUEUED 이후만 노출: queuedAt이 있어야 하고, RECEIVED는 제외]
+        Expression filter = Expression.builder()
+                .expression("attribute_exists(#queuedAt) AND #status <> :received")
+                .expressionNames(Map.of(
+                        "#queuedAt", "queuedAt",
+                        "#status", "status"
+                ))
+                .expressionValues(Map.of(
+                        ":received", AttributeValue.builder().s("RECEIVED").build()
+                ))
+                .build();
+
+
         // GSI 조회 (최신순 정렬)
         Page<RequestItem> page = enhancedClient.table(tableName, TableSchema.fromBean(RequestItem.class))
                 .index("GSI1")
                 .query(q -> q.queryConditional(QueryConditional.keyEqualTo(gsiKey))
-                        .scanIndexForward(false) // 내림차순 (최신순)
+                        .scanIndexForward(false) // 최신순 (내림차순)
                         .limit(limit))
+                .filterExpression(filter)
                 .iterator()
                 .next();
 

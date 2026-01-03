@@ -98,23 +98,27 @@ public class RequestItem {
     private Long ttl;
 
     // DdbKeyFactory 연결, DB 저장 전 호출해야 함!
-    public void generateKeys() {
+    public void generateBaseKeys() {
         if (requestId == null || eventId == null || userId == null) {
-            throw new IllegalStateException("키 생성 오류: requestId, eventId, userId must not be null");
+            throw new IllegalStateException("Base 키 생성 오류: 필수 필드 누락");
         }
-
-        // Base Table Keys
+        // 기본 테이블 키만 생성
         this.pk = DdbKeyFactory.requestPk(requestId);
         this.sk = DdbKeyFactory.metaSk();
+        // GSI 키는 건드리지 않음 (null 상태 유지)
+    }
 
-        // GSI1 Keys (User View)
+    // 2. GSI 키 생성 메서드 추가 (QUEUED 전이 시 호출)
+    public void generateGsiKeys() {
+        if (queuedAt == null) {
+            throw new IllegalStateException("GSI 키 생성 오류: queuedAt 필수");
+        }
+        // GSI1 (내 신청 내역)
         this.gsi1Pk = DdbKeyFactory.userPk(userId);
-        // queuedAt이 없으면 0으로 처리 (혹은 requestedAt 사용 정책에 따라 변경 가능)
-        long qTime = (queuedAt != null) ? queuedAt : 0L;
-        this.gsi1Sk = DdbKeyFactory.userRequestSk(qTime, requestId);
+        this.gsi1Sk = DdbKeyFactory.userRequestSk(queuedAt, requestId);
 
-        // GSI2 Keys (Event/Admin View)
+        // GSI2 (이벤트/관리자 조회)
         this.gsi2Pk = DdbKeyFactory.eventPk(eventId);
-        this.gsi2Sk = DdbKeyFactory.eventRequestSk(qTime, requestId);
+        this.gsi2Sk = DdbKeyFactory.eventRequestSk(queuedAt, requestId);
     }
 }

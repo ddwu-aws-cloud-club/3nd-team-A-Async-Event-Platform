@@ -26,13 +26,15 @@ public class RequestTestController {
 
     // Postman에서 호출할 주소: POST http://localhost:8080/test/requests
     @PostMapping("/test/requests")
-    public RequestItem createTestRequest(@RequestBody Map<String, String> body) {
-        // 1. Postman Body에서 데이터 꺼내기
-        String userId = body.get("userId");
-        String eventId = body.get("eventId");
-        String requestId = UUID.randomUUID().toString(); // 랜덤 생성
+    public RequestItem createTestRequest(@RequestBody Map<String, Object> body) {
+        String userId = (String) body.get("userId");
+        String eventId = (String) body.get("eventId");
+        // "isQueued": true 옵션을 받을 수 있음
+        boolean isQueued = Boolean.TRUE.equals(body.get("isQueued"));
 
-        // 2. RequestItem 객체 생성 (Builder 패턴)
+        String requestId = UUID.randomUUID().toString();
+
+        // 1. 기본 객체 생성 (RECEIVED)
         RequestItem item = RequestItem.builder()
                 .userId(userId)
                 .eventId(eventId)
@@ -41,14 +43,20 @@ public class RequestTestController {
                 .requestedAt(System.currentTimeMillis())
                 .build();
 
-        // 3. 키 생성
-        item.generateKeys();
+        // 2. Base 키 생성 (항상 수행)
+        item.generateBaseKeys();
 
-        // 4. DynamoDB에 저장
+        // 3. 옵션: QUEUED 상태로 만들고 싶다면?
+        if (isQueued) {
+            item.setStatus(RequestStatus.QUEUED);
+            item.setQueuedAt(System.currentTimeMillis());
+            // 이때만 GSI 키를 생성! -> 목록 조회 API에 노출됨
+            item.generateGsiKeys();
+        }
+
         DynamoDbTable<RequestItem> table = enhancedClient.table(tableName, TableSchema.fromBean(RequestItem.class));
         table.putItem(item);
 
-        // 5. 결과 반환
         return item;
     }
 }
