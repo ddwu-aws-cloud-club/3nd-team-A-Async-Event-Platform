@@ -1,6 +1,0 @@
-rootProject.name = 'async-event-platform'
-
-include("common")
-include("ingest-api")
-include("worker")
-include("admin-api")

@@ -1,6 +1,0 @@
-ddb:
-  table-name: AsyncEventTable
-
-aws:
-  region: ap-northeast-2
-  profile: hyeyun
