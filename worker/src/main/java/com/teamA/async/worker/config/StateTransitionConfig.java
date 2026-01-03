@@ -1,5 +1,7 @@
-package com.teamA.async.common.transition;
+package com.teamA.async.worker.config;
 
+import com.teamA.async.common.transition.DynamoStateTransitionService;
+import com.teamA.async.common.transition.StateTransitionService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
