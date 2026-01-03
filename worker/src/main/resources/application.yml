@@ -1,2 +1,7 @@
 server:
   port: 8081
+
+aws:
+  region: ap-northeast-2
+ddb:
+  table-name: AsyncEventTable
