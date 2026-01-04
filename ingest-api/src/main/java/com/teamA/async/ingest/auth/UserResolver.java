@@ -10,11 +10,18 @@ import org.springframework.stereotype.Component;
  * - Step1에서는 "userId 공급자" 역할만 수행
  * - G1에서 JWT / SecurityContext 기반 구현으로 교체 예정
  */
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+
 @Component
 public class UserResolver {
 
     public String currentUserId() {
-        // TODO G1: SecurityContext / JWT Claim에서 추출
-        return "user-001";
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || auth.getPrincipal() == null) {
+            throw new IllegalStateException("No authenticated user");
+        }
+        return auth.getPrincipal().toString(); // principal=userId
     }
 }
