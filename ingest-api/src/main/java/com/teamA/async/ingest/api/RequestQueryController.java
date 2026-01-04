@@ -8,24 +8,19 @@ import com.teamA.async.common.domain.model.RequestItem;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.RequestParam;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 import software.amazon.awssdk.enhanced.dynamodb.DynamoDbEnhancedClient;
+import software.amazon.awssdk.enhanced.dynamodb.Expression;
 import software.amazon.awssdk.enhanced.dynamodb.Key;
 import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
 import software.amazon.awssdk.enhanced.dynamodb.model.Page;
 import software.amazon.awssdk.enhanced.dynamodb.model.QueryConditional;
-import software.amazon.awssdk.enhanced.dynamodb.Expression;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
-import software.amazon.awssdk.enhanced.dynamodb.model.QueryEnhancedRequest;
-import software.amazon.awssdk.enhanced.dynamodb.DynamoDbIndex;
 
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
-
-import static tools.jackson.databind.type.LogicalType.Map;
 
 @RestController
 @RequiredArgsConstructor
@@ -36,7 +31,6 @@ public class RequestQueryController {
     @Value("${aws.dynamodb.table-name}")
     private String tableName;
 
-    // 1. 단건 조회 (Polling용)
     @GetMapping("/requests/{requestId}")
     public ResponseEntity<RequestStatusResponse> getRequestStatus(@PathVariable String requestId) {
         Key key = Key.builder()
@@ -67,19 +61,17 @@ public class RequestQueryController {
                 .build());
     }
 
-    // 2. 내 신청 내역 조회 (목록용, GSI1 사용)
     @GetMapping("/me/participations")
     public ResponseEntity<List<MyParticipationItem>> getMyParticipations(
             @RequestParam(defaultValue = "20") int limit,
-            // 실제로는 JWT 토큰에서 userId를 꺼내야 함 (임시로 파라미터 처리)
             @RequestParam String userId
     ) {
-        // GSI1 PK 생성: USER#{userId}
         Key gsiKey = Key.builder()
                 .partitionValue(DdbKeyFactory.userPk(userId))
                 .build();
 
-        // QUEUED 이후만 노출: queuedAt이 있어야 하고, RECEIVED는 제외]
+        // (선택) 안전장치 필터: queuedAt 존재 + RECEIVED 제외
+        // 사실상 GSI1이 QUEUED 때만 세팅되면 없어도 됨.
         Expression filter = Expression.builder()
                 .expression("attribute_exists(#queuedAt) AND #status <> :received")
                 .expressionNames(Map.of(
@@ -91,16 +83,20 @@ public class RequestQueryController {
                 ))
                 .build();
 
-
-        // GSI 조회 (최신순 정렬)
-        Page<RequestItem> page = enhancedClient.table(tableName, TableSchema.fromBean(RequestItem.class))
+        Iterator<Page<RequestItem>> it = enhancedClient.table(tableName, TableSchema.fromBean(RequestItem.class))
                 .index("GSI1")
                 .query(q -> q.queryConditional(QueryConditional.keyEqualTo(gsiKey))
-                        .scanIndexForward(false) // 최신순 (내림차순)
-                        .limit(limit))
-                .filterExpression(filter)
-                .iterator()
-                .next();
+                        .scanIndexForward(false)
+                        .limit(limit)
+                        .filterExpression(filter)
+                )
+                .iterator();
+
+        if (!it.hasNext()) {
+            return ResponseEntity.ok(List.of());
+        }
+
+        Page<RequestItem> page = it.next();
 
         List<MyParticipationItem> items = page.items().stream()
                 .map(MyParticipationItem::from)
