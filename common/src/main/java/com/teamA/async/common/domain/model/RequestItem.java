@@ -50,7 +50,7 @@ public class RequestItem {
     public String getGsi1Sk() { return gsi1Sk; }
 
     // GSI2: 이벤트별/관리자 조회
-    // PK: EVENT#{eventId} / SK: QAT#{queuedAt}#ST#{status}#REQ#{requestId}
+    // PK: EVENT#{eventId} / SK: QAT#{queuedAt}#ST#{status}#REQ#{requestId}  // status 포함 금지
     private String gsi2Pk;
     private String gsi2Sk;
 
