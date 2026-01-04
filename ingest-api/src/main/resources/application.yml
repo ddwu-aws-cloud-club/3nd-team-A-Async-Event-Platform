@@ -8,7 +8,7 @@ management:
         include: health,info
 aws:
   region: ${AWS_REGION:ap-northeast-2}
-  profile: wish
+  profile: hyeyun
   dynamodb:
     table-name: ${DDB_TABLE_NAME:AsyncEventTable}
 
