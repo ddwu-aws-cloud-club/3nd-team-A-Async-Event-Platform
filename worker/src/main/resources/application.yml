@@ -3,9 +3,9 @@ server:
 
 aws:
   region: ap-northeast-2
+  profile: wish
 ddb:
   table-name: AsyncEventTable
 
 sqs:
   queue-url: https://sqs.ap-northeast-2.amazonaws.com/590807098068/AsyncEventMainQueue
-

@@ -15,7 +15,7 @@ public class AwsClientConfig {
     @Bean
     public DynamoDbClient dynamoDbClient(
             @Value("${aws.region}") String region,
-            @Value("${aws.profile:hyeyun}") String profile
+            @Value("${aws.profile:wish}") String profile
     ) {
         return DynamoDbClient.builder()
                 .region(Region.of(region))
@@ -33,7 +33,7 @@ public class AwsClientConfig {
     @Bean
     public SqsClient sqsClient(
             @Value("${aws.region}") String region,
-            @Value("${aws.profile:hyeyun}") String profile
+            @Value("${aws.profile:wish}") String profile
     ) {
         return SqsClient.builder()
                 .region(Region.of(region))

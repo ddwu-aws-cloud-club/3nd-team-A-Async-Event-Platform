@@ -1,12 +1,10 @@
 package com.teamA.async.worker.ddb;
 
+import com.teamA.async.common.ddb.keys.DdbKeyFactory;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
-import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
-import software.amazon.awssdk.services.dynamodb.model.ConditionalCheckFailedException;
-import software.amazon.awssdk.services.dynamodb.model.GetItemRequest;
-import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
+import software.amazon.awssdk.services.dynamodb.model.*;
 
 import java.time.Instant;
 import java.util.HashMap;
@@ -18,25 +16,18 @@ import java.util.Optional;
 public class RequestStateRepository {
 
     private final DynamoDbClient dynamoDbClient;
-
     private static final String TABLE_NAME = "AsyncEventTable";
 
     /**
-     * QUEUED → PROCESSING 선점 시도
+     * QUEUED → PROCESSING 선점
      */
     public boolean tryAcquireProcessing(String requestId) {
-        Map<String, AttributeValue> key = key(requestId);
-
-        Map<String, String> names = Map.of(
-                "#status", "status",
-                "#startedAt", "startedAt"
-        );
-
-        Map<String, AttributeValue> values = Map.of(
-                ":queued", AttributeValue.builder().s("QUEUED").build(),
-                ":processing", AttributeValue.builder().s("PROCESSING").build(),
-                ":now", AttributeValue.builder()
-                        .n(String.valueOf(Instant.now().toEpochMilli()))
+        Map<String, AttributeValue> key = Map.of(
+                "PK", AttributeValue.builder()
+                        .s(DdbKeyFactory.requestPk(requestId))
+                        .build(),
+                "SK", AttributeValue.builder()
+                        .s(DdbKeyFactory.metaSk())
                         .build()
         );
 
@@ -45,8 +36,17 @@ public class RequestStateRepository {
                 .key(key)
                 .conditionExpression("#status = :queued")
                 .updateExpression("SET #status = :processing, #startedAt = :now")
-                .expressionAttributeNames(names)
-                .expressionAttributeValues(values)
+                .expressionAttributeNames(Map.of(
+                        "#status", "status",
+                        "#startedAt", "startedAt"
+                ))
+                .expressionAttributeValues(Map.of(
+                        ":queued", AttributeValue.builder().s("QUEUED").build(),
+                        ":processing", AttributeValue.builder().s("PROCESSING").build(),
+                        ":now", AttributeValue.builder()
+                                .n(String.valueOf(Instant.now().toEpochMilli()))
+                                .build()
+                ))
                 .build();
 
         try {
@@ -57,10 +57,6 @@ public class RequestStateRepository {
         }
     }
 
-    /**
-     * PROCESSING → SUCCEEDED
-     * + finishedAt, uiResult, resultCode 세팅
-     */
     public boolean markSucceeded(String requestId) {
         return updateFinalStatus(
                 requestId,
@@ -71,10 +67,6 @@ public class RequestStateRepository {
         );
     }
 
-    /**
-     * PROCESSING → REJECTED (정원 초과)
-     * + finishedAt, uiResult, resultCode, failureClass 세팅
-     */
     public boolean markRejectedCapacity(String requestId) {
         return updateFinalStatus(
                 requestId,
@@ -85,25 +77,6 @@ public class RequestStateRepository {
         );
     }
 
-    /**
-     * PROCESSING → FAILED_FINAL (필요 시 사용)
-     */
-    public boolean markFailedFinal(String requestId, String resultCode) {
-        return updateFinalStatus(
-                requestId,
-                "FAILED_FINAL",
-                "FAILED",
-                resultCode,
-                "RETRYABLE"
-        );
-    }
-
-    /**
-     * 공통 최종 상태 전이 로직
-     *
-     * - Condition: status == PROCESSING 일 때만 확정
-     * - 멱등성 보장: 이미 최종 상태면 ConditionalCheckFailedException → false
-     */
     private boolean updateFinalStatus(
             String requestId,
             String targetStatus,
@@ -111,37 +84,45 @@ public class RequestStateRepository {
             String resultCode,
             String failureClass
     ) {
-        Map<String, AttributeValue> key = key(requestId);
+        Map<String, AttributeValue> key = Map.of(
+                "PK", AttributeValue.builder()
+                        .s(DdbKeyFactory.requestPk(requestId))
+                        .build(),
+                "SK", AttributeValue.builder()
+                        .s(DdbKeyFactory.metaSk())
+                        .build()
+        );
 
         Map<String, String> names = new HashMap<>();
+        Map<String, AttributeValue> values = new HashMap<>();
+
         names.put("#status", "status");
         names.put("#finishedAt", "finishedAt");
         names.put("#uiResult", "uiResult");
         names.put("#resultCode", "resultCode");
 
-        Map<String, AttributeValue> values = new HashMap<>();
         values.put(":processing", AttributeValue.builder().s("PROCESSING").build());
         values.put(":target", AttributeValue.builder().s(targetStatus).build());
+        values.put(":uiResult", AttributeValue.builder().s(uiResult).build());
+        values.put(":resultCode", AttributeValue.builder().s(resultCode).build());
         values.put(":now", AttributeValue.builder()
                 .n(String.valueOf(Instant.now().toEpochMilli()))
                 .build());
-        values.put(":uiResult", AttributeValue.builder().s(uiResult).build());
-        values.put(":resultCode", AttributeValue.builder().s(resultCode).build());
 
-        String updateExpression =
+        String updateExpr =
                 "SET #status = :target, #finishedAt = :now, #uiResult = :uiResult, #resultCode = :resultCode";
 
         if (failureClass != null) {
             names.put("#failureClass", "failureClass");
             values.put(":failureClass", AttributeValue.builder().s(failureClass).build());
-            updateExpression += ", #failureClass = :failureClass";
+            updateExpr += ", #failureClass = :failureClass";
         }
 
         UpdateItemRequest req = UpdateItemRequest.builder()
                 .tableName(TABLE_NAME)
                 .key(key)
                 .conditionExpression("#status = :processing")
-                .updateExpression(updateExpression)
+                .updateExpression(updateExpr)
                 .expressionAttributeNames(names)
                 .expressionAttributeValues(values)
                 .build();
@@ -154,18 +135,22 @@ public class RequestStateRepository {
         }
     }
 
-    /**
-     * 현재 상태 조회
-     */
     public Optional<String> getCurrentStatus(String requestId) {
-        Map<String, AttributeValue> key = key(requestId);
+        Map<String, AttributeValue> key = Map.of(
+                "PK", AttributeValue.builder()
+                        .s(DdbKeyFactory.requestPk(requestId))
+                        .build(),
+                "SK", AttributeValue.builder()
+                        .s(DdbKeyFactory.metaSk())
+                        .build()
+        );
 
         GetItemRequest request = GetItemRequest.builder()
                 .tableName(TABLE_NAME)
                 .key(key)
-                .consistentRead(true)
                 .projectionExpression("#status")
                 .expressionAttributeNames(Map.of("#status", "status"))
+                .consistentRead(true)
                 .build();
 
         Map<String, AttributeValue> item =
@@ -174,14 +159,6 @@ public class RequestStateRepository {
         if (item == null || !item.containsKey("status")) {
             return Optional.empty();
         }
-
         return Optional.of(item.get("status").s());
-    }
-
-    private Map<String, AttributeValue> key(String requestId) {
-        return Map.of(
-                "PK", AttributeValue.builder().s("REQ#" + requestId).build(),
-                "SK", AttributeValue.builder().s("META").build()
-        );
     }
 }
