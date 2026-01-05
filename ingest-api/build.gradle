@@ -17,6 +17,14 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
 
+    // Security
+    implementation 'org.springframework.boot:spring-boot-starter-security'
+
+    // JWT (jjwt)
+    implementation 'io.jsonwebtoken:jjwt-api:0.12.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.5'
+
     //AWS SDK
     implementation platform('software.amazon.awssdk:bom:2.25.64')
     implementation 'software.amazon.awssdk:dynamodb'
