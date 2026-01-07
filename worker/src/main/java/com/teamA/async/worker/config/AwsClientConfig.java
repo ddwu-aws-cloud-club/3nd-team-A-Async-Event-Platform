@@ -7,6 +7,7 @@ import software.amazon.awssdk.auth.credentials.ProfileCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.eventbridge.EventBridgeClient;
 
 @Configuration
 public class AwsClientConfig {
@@ -36,4 +37,13 @@ public class AwsClientConfig {
                 )
                 .build();
     }
+
+    @Bean
+    public EventBridgeClient eventBridgeClient() {
+        return EventBridgeClient.builder()
+                .region(Region.of(region))
+                .credentialsProvider(ProfileCredentialsProvider.create(profile))
+                .build();
+    }
+
 }
