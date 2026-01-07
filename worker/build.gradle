@@ -13,6 +13,9 @@ java {
 dependencies {
     implementation project(':common')
 
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.0'
+    testImplementation 'org.assertj:assertj-core:3.25.3'
+
     implementation platform('software.amazon.awssdk:bom:2.29.0')
     implementation 'software.amazon.awssdk:dynamodb'
 
@@ -33,7 +36,6 @@ dependencies {
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
-
 tasks.named('test') {
     useJUnitPlatform()
 }
