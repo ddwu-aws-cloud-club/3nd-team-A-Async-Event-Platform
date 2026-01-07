@@ -2,6 +2,7 @@ package com.teamA.async.worker.analytics.publisher;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.teamA.async.worker.analytics.event.ParticipationProcessedEvent;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -17,12 +18,16 @@ public class ParticipationEventBridgePublisher {
 
     private final EventBridgeClient eventBridgeClient;
     private final ObjectMapper objectMapper;
+    private final MeterRegistry meterRegistry; // 메트릭스
 
     // 고정 규칙
     private static final String SOURCE = "kr.ac.dongduk.worker";
     private static final String DETAIL_TYPE = "ParticipationProcessed";
 
     public void publish(ParticipationProcessedEvent payload) {
+        // 고의적으로 에러 만듬 -> EventBridge 고장냄 
+        // if (true) throw new RuntimeException("Test Exception for Step 4");
+
         try {
             String detailJson = objectMapper.writeValueAsString(payload);
 
@@ -48,11 +53,13 @@ public class ParticipationEventBridgePublisher {
                         failed,
                         payload.requestId(),
                         resp.entries());
+                meterRegistry.counter("worker.eventbridge.exception").increment();
             }
 
         } catch (Exception e) {
             // 예외 전파 금지(Worker 흐름 끊기면 안 됨)
             log.warn("[EVENTBRIDGE] putEvents exception ignored. requestId={}", payload.requestId(), e);
+            meterRegistry.counter("worker.eventbridge.exception").increment();
         }
     }
 }
