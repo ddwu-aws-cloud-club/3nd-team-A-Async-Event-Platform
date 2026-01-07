@@ -18,6 +18,7 @@ dependencies {
 
     implementation platform('software.amazon.awssdk:bom:2.29.0')
     implementation 'software.amazon.awssdk:dynamodb'
+    implementation 'software.amazon.awssdk:eventbridge'
 
     implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'

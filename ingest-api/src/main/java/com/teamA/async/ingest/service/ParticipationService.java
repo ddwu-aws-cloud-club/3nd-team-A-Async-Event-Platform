@@ -15,6 +15,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.MessageAttributeValue;
 import tools.jackson.databind.ObjectMapper;
 
 import java.util.HashMap;
@@ -69,19 +70,46 @@ public class ParticipationService {
         requestWriteRepository.putReceived(item);
 
         try {
-            // 3) SQS enqueue
-            ParticipationMessage msg =
-                    new ParticipationMessage(newRequestId, eventId, EventType.FIRST_COME);
+            // 3) SQS enqueue 전에 queuedAt 확정 (Worker 생성 금지 규칙)
+            long queuedAt = System.currentTimeMillis();
+
+            ParticipationMessage msg = new ParticipationMessage(
+                    newRequestId, eventId, userId, queuedAt, EventType.FIRST_COME
+            );
 
             String body = objectMapper.writeValueAsString(msg);
+
+            Map<String, MessageAttributeValue> attributes = Map.of(
+                    "requestId", MessageAttributeValue.builder()
+                            .dataType("String")
+                            .stringValue(newRequestId)
+                            .build(),
+                    "eventId", MessageAttributeValue.builder()
+                            .dataType("String")
+                            .stringValue(eventId)
+                            .build(),
+                    "userId", MessageAttributeValue.builder()
+                            .dataType("String")
+                            .stringValue(userId)
+                            .build(),
+                    "eventType", MessageAttributeValue.builder()
+                            .dataType("String")
+                            .stringValue(EventType.FIRST_COME.name())
+                            .build(),
+                    "queuedAt", MessageAttributeValue.builder()
+                            .dataType("String")
+                            .stringValue(Long.toString(queuedAt))
+                            .build()
+            );
 
             sqsClient.sendMessage(r -> r
                     .queueUrl(queueUrl)
                     .messageBody(body)
+                    .messageAttributes(attributes)
             );
 
-            // 4) enqueue 성공 → RECEIVED → QUEUED
-            long queuedAt = System.currentTimeMillis();
+
+            // 4) enqueue 성공 → RECEIVED → QUEUED+ queuedAt
 
             Map<String, Object> patch = new HashMap<>();
             patch.put("queuedAt", queuedAt);
