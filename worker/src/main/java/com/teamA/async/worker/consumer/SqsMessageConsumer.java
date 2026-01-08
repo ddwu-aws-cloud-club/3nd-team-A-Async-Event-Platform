@@ -67,6 +67,8 @@ public class SqsMessageConsumer {
     }
 
     private void handleMessage(Message message) {
+        log.info(">>> Worker 받음! Body={}", message.body());
+
         final int attempt = parseAttempt(message);
         final long startedAt = System.currentTimeMillis();
 
@@ -118,7 +120,8 @@ public class SqsMessageConsumer {
                     startedAt, finishedAt,
                     RequestStatus.FAILED_FINAL,
                     ResultCode.FAILED_INGEST_ENQUEUE,
-                    new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "INVALID_MESSAGE_BODY", "Body JSON parse failed")
+                    new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "INVALID_MESSAGE_BODY", "Body JSON parse failed"),
+                    false
             ));
 
             log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (INVALID_MESSAGE_BODY)",
@@ -145,21 +148,39 @@ public class SqsMessageConsumer {
                 case "RECEIVED":
                 case "QUEUED":
                     // 레이스/경합 -> ack ❌ (재시도에서 다시 잡도록)
-                    log.info("[SKIP] requestId={} status={} attempt={} (race/contend -> no-ack)", payload.requestId(), status, attempt);
+                    log.info("[SKIP] requestId={} status={} attempt={} (race/contend -> ack)", payload.requestId(), status, attempt);
+                    long finishedAt = System.currentTimeMillis();
+                    publisher.publish(buildEvent(
+                            payload, attempt, IS_DLQ,
+                            startedAt, finishedAt,
+                            RequestStatus.REJECTED, // 혹은 status에 맞춰서 변환
+                            ResultCode.DUPLICATE_SKIPPED,      // 혹은 DUPLICATE_SKIPPED
+                            null,
+                            true //  isDuplicate = true
+                    ));
+                    deleteMessage(message); // RECEIVED 에서도 재시도 루프 끊도록
                     return;
-
                 case "PROCESSING":
                 case "SUCCEEDED":
                 case "REJECTED":
                 case "FAILED_FINAL":
                 default:
-                    // 이미 처리 중/처리 완료/알 수 없음 -> 중복 메시지로 보고 ack ✅
+                    // 이미 처리 중/처리 완료/알 수 없음 -> 중복 메시지로 보고 ack
                     log.info("[SKIP] requestId={} status={} attempt={} (dup -> ack)", payload.requestId(), status, attempt);
+                    // 중복 방어 이벤트 발행 (S3 로그용)
+                    finishedAt = System.currentTimeMillis();
+                    publisher.publish(buildEvent(
+                            payload, attempt, IS_DLQ,
+                            startedAt, finishedAt,
+                            RequestStatus.SUCCEEDED, // 혹은 status에 맞춰서 변환
+                            ResultCode.SUCCESS,      // 혹은 DUPLICATE_SKIPPED
+                            null,
+                            true //  isDuplicate = true
+                    ));
                     deleteMessage(message);
                     return;
             }
         }
-
 
         // 4) 단일 Worker만 진입
         try {
@@ -190,7 +211,7 @@ public class SqsMessageConsumer {
                 resultCode = ResultCode.SUCCESS;
             }
 
-            publisher.publish(buildEvent(payload, attempt, IS_DLQ, startedAt, finishedAt, finalStatus, resultCode, null));
+            publisher.publish(buildEvent(payload, attempt, IS_DLQ, startedAt, finishedAt, finalStatus, resultCode, null, false));
             deleteMessage(message);
 
         } catch (Exception e) {
@@ -213,7 +234,8 @@ public class SqsMessageConsumer {
                         startedAt, finishedAt,
                         RequestStatus.FAILED_FINAL,
                         ResultCode.FAILED_INGEST_ENQUEUE,
-                        new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "WORKER_NON_RETRYABLE", e.getMessage())
+                        new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "WORKER_NON_RETRYABLE", e.getMessage()),
+                        false
                 ));
 
                 log.warn("[NON-RETRYABLE] requestId={} -> FAILED_FINAL updated={} attempt={}", payload.requestId(), ok, attempt, e);
@@ -297,7 +319,8 @@ public class SqsMessageConsumer {
             long finishedAt,
             RequestStatus finalStatus,
             ResultCode resultCode,
-            ParticipationProcessedFailure failureOrNull
+            ParticipationProcessedFailure failureOrNull,
+            boolean isDuplicate
     ) {
         ParticipationProcessedTimestamps ts =
                 new ParticipationProcessedTimestamps(payload.queuedAt(), startedAt, finishedAt);
@@ -306,8 +329,7 @@ public class SqsMessageConsumer {
                 new ParticipationProcessedDelivery(attempt, isDlq);
 
         String workerId = Optional.ofNullable(System.getenv("HOSTNAME")).orElse("worker-local");
-        ParticipationProcessedMeta meta = new ParticipationProcessedMeta(workerId);
-
+        ParticipationProcessedMeta meta = new ParticipationProcessedMeta(workerId, isDuplicate);
         if (failureOrNull == null) {
             return ParticipationProcessedEvent.noFailure(
                     SCHEMA_VERSION, ENV,

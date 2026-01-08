@@ -30,7 +30,7 @@ class ParticipationProcessedEventSerializationTest {
                                 1704290000200L
                         ),
                         new ParticipationProcessedDelivery(1, false),
-                        new ParticipationProcessedMeta("worker-local")
+                        new ParticipationProcessedMeta("worker-local", false)
                 );
 
         String json = objectMapper.writeValueAsString(event);

@@ -12,6 +12,7 @@ import com.teamA.async.ingest.api.dto.ParticipationResponse;
 import com.teamA.async.ingest.ddb.IdempotencyRepository;
 import com.teamA.async.ingest.ddb.RequestWriteRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.sqs.SqsClient;
@@ -22,6 +23,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class ParticipationService {
@@ -39,6 +41,8 @@ public class ParticipationService {
     // 시간은 우선 System.currentTimeMillis()로 가고, 나중에 common Clock으로 교체해도 됨
     public ParticipationResponse participate(String eventId, String userId) {
         String idempotencyPk = DdbKeyFactory.idempotencyPk(eventId, userId);
+        String requestId;
+        boolean isDuplicate;
 
         // 1) lock 성공 후 requestId 생성하도록 리팩터링
         String newRequestId = newRequestId();
@@ -51,7 +55,28 @@ public class ParticipationService {
             if (existing == null) {
                 throw new IllegalStateException("Idempotency lock exists but requestId missing: " + idempotencyPk);
             }
-            return new ParticipationResponse(existing, true);
+            // G1-Step6: 여기서 SQS로의 메시지를 막음
+            // return new ParticipationResponse(existing, true);
+
+            requestId = existing;
+            isDuplicate = true;
+
+            // ⚠️ 여기서는 RequestItem을 새로 만들지 않음 (이미 RECEIVED/QUEUED/그 이후 상태로 존재하니까)
+        } else {
+            // 최초 요청
+            requestId = newRequestId;
+            isDuplicate = false;
+
+            long now = System.currentTimeMillis();
+            RequestItem item = RequestItem.builder()
+                    .requestId(requestId)
+                    .eventId(eventId)
+                    .userId(userId)
+                    .status(RequestStatus.RECEIVED)
+                    .requestedAt(now)
+                    .build();
+
+            requestWriteRepository.putReceived(item);
         }
 
         // 2-B) Lock 성공 => RequestItem (RECEIVED) 생성 (GSI 미세팅)
@@ -69,6 +94,7 @@ public class ParticipationService {
         // 일단 여기서는 base key만 set하도록 repository에서 강제한다.
         requestWriteRepository.putReceived(item);
 
+        // 중복이든 아니든 SQS로 보내기
         try {
             // 3) SQS enqueue 전에 queuedAt 확정 (Worker 생성 금지 규칙)
             long queuedAt = System.currentTimeMillis();
@@ -108,46 +134,59 @@ public class ParticipationService {
                     .messageAttributes(attributes)
             );
 
+            // 최초 요청일 때만 RECEIVED -> QUEUED 전이
+            if (!isDuplicate) {
+                Map<String, Object> patch = new HashMap<>();
+                patch.put("queuedAt", queuedAt);
+                patch.put("GSI1PK", DdbKeyFactory.userPk(userId));
+                patch.put("GSI1SK", DdbKeyFactory.userRequestSk(queuedAt, requestId));
+                patch.put("GSI2PK", DdbKeyFactory.eventPk(eventId));
+                patch.put("GSI2SK", DdbKeyFactory.eventRequestSk(queuedAt, requestId));
 
-            // 4) enqueue 성공 → RECEIVED → QUEUED+ queuedAt
+                stateTransitionService.transition(
+                        requestId,
+                        RequestStatus.RECEIVED,
+                        RequestStatus.QUEUED,
+                        patch
+                );
+            }
 
-            Map<String, Object> patch = new HashMap<>();
-            patch.put("queuedAt", queuedAt);
-            patch.put("GSI1PK", DdbKeyFactory.userPk(userId));
-            patch.put("GSI1SK", DdbKeyFactory.userRequestSk(queuedAt, newRequestId));
-            patch.put("GSI2PK", DdbKeyFactory.eventPk(eventId));
-            patch.put("GSI2SK", DdbKeyFactory.eventRequestSk(queuedAt, newRequestId));
-
-            stateTransitionService.transition(
-                    newRequestId,
-                    RequestStatus.RECEIVED,
-                    RequestStatus.QUEUED,
-                    patch
-            );
+            return new ParticipationResponse(requestId, isDuplicate);
 
         } catch (Exception e) {
-            // 5) enqueue 실패 → FAILED_FINAL
+            // SQS 전송 실패 시
             long nowFail = System.currentTimeMillis();
 
+            // 중복 요청일 때는 이미 존재하는 RequestItem이 있으므로 FAILED_FINAL 불가
+            if (isDuplicate) {
+                log.warn("SQS enqueue failed for duplicate request (non-critical). eventId={}, userId={}, existingRequestId={}",
+                        eventId, userId, requestId, e);
+                // 중복 요청이니 그냥 클라이언트에 성공 응답 내려줌 (이미 처리된 건이니까)
+                return new ParticipationResponse(requestId, true);
+            }
+
+            // 최초 요청이고 SQS 전송 실패 → FAILED_FINAL로 마무리
             Map<String, Object> patch = new HashMap<>();
             patch.put("resultCode", ResultCode.FAILED_INGEST_ENQUEUE);
             patch.put("uiResult", UiResult.FAILED);
             patch.put("finishedAt", nowFail);
-            patch.put("errorMessage", e.getMessage());
+            patch.put("errorMessage", "SQS enqueue failed: " + e.getMessage());
 
             stateTransitionService.transition(
-                    newRequestId,
+                    requestId,
                     RequestStatus.RECEIVED,
                     RequestStatus.FAILED_FINAL,
                     patch
             );
+
+            log.error("SQS enqueue failed for new request. requestId={}, eventId={}, userId={}",
+                    requestId, eventId, userId, e);
+
+            return new ParticipationResponse(requestId, false); // isDuplicate는 false 그대로
         }
-
-
-        return new ParticipationResponse(newRequestId, false);
     }
 
-    private String newRequestId() {
+    private String newRequestId () {
         // 형식은 팀 규칙대로. 우선 UUID short 형태
         return "REQ-" + UUID.randomUUID().toString().substring(0, 8);
     }
