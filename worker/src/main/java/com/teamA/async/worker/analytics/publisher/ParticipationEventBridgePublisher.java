@@ -25,10 +25,11 @@ public class ParticipationEventBridgePublisher {
     private static final String DETAIL_TYPE = "ParticipationProcessed";
 
     public void publish(ParticipationProcessedEvent payload) {
-        // 고의적으로 에러 만듬 -> EventBridge 고장냄
-        // if (true) throw new RuntimeException("Test Exception for Step 4");
 
         try {
+            // 고의적으로 에러 만듬 -> EventBridge 고장냄
+            // if (true) throw new RuntimeException("Test Exception for Step 4");
+
             String detailJson = objectMapper.writeValueAsString(payload);
 
             PutEventsRequestEntry entry = PutEventsRequestEntry.builder()
