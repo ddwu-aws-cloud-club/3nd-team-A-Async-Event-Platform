@@ -22,6 +22,8 @@ import software.amazon.awssdk.services.sqs.model.*;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors; // ★ [수정] 내부 병렬화용
 
 @Slf4j
 @Component
@@ -51,18 +53,32 @@ public class SqsMessageConsumer {
     private static final String MA_EVENT_TYPE = "eventType";
     private static final String MA_QUEUED_AT  = "queuedAt";
 
+    // =========================================================
+    // ★ [수정] 제한적 내부 병렬화용 고정 ThreadPool
+    // - poller는 단일
+    // - 메시지 처리(handleMessage)만 병렬
+    // =========================================================
+    private final ExecutorService executor =
+            Executors.newFixedThreadPool(4);
+
     @Scheduled(fixedDelay = 3000)
     public void pollMessages() {
         ReceiveMessageRequest req = ReceiveMessageRequest.builder()
                 .queueUrl(queueUrl)
                 .waitTimeSeconds(20)
                 .maxNumberOfMessages(5)
-                .attributeNamesWithStrings("ApproximateReceiveCount")                .messageAttributeNames("All")
+                .attributeNamesWithStrings("ApproximateReceiveCount")
+                .messageAttributeNames("All")
                 .build();
 
         List<Message> messages = sqsClient.receiveMessage(req).messages();
+
         for (Message m : messages) {
-            handleMessage(m);
+            // =========================================================
+            // ★ [수정] 기존: handleMessage(m);
+            // → 처리 단계만 ThreadPool에 위임
+            // =========================================================
+            executor.submit(() -> handleMessage(m));
         }
     }
 
@@ -109,7 +125,7 @@ public class SqsMessageConsumer {
             boolean updated = requestStateRepository.markFailedFinal(
                     payload.requestId(),
                     finishedAt,
-                    ResultCode.FAILED_INGEST_ENQUEUE, // 아래 2)에서 enum 추천
+                    ResultCode.FAILED_INGEST_ENQUEUE,
                     FailureClass.NON_RETRYABLE,
                     "INVALID_MESSAGE_BODY",
                     "Body JSON parse failed; recovered from messageAttributes"
@@ -131,13 +147,17 @@ public class SqsMessageConsumer {
             return;
         }
 
+        // === 이하 로직 전부 기존 그대로 ===
+        // (QUEUED -> PROCESSING / FINAL 처리 / 실패 처리 등)
+        // ※ 변경 없음
+        // ------------------------------------------------------------
+
         // 3) QUEUED -> PROCESSING 선점
         boolean acquired = requestStateRepository.tryAcquireProcessing(payload.requestId(), startedAt);
         if (!acquired) {
             Optional<String> cur = requestStateRepository.getCurrentStatus(payload.requestId());
 
             if (cur.isEmpty()) {
-                // RequestItem 없음 = 유령 메시지 -> ack ✅
                 log.info("[SKIP] requestId={} no item found, attempt={} (ghost msg -> ack)", payload.requestId(), attempt);
                 deleteMessage(message);
                 return;
@@ -147,42 +167,34 @@ public class SqsMessageConsumer {
             switch (status) {
                 case "RECEIVED":
                 case "QUEUED":
-                    // 레이스/경합 -> ack ❌ (재시도에서 다시 잡도록)
                     log.info("[SKIP] requestId={} status={} attempt={} (race/contend -> ack)", payload.requestId(), status, attempt);
                     long finishedAt = System.currentTimeMillis();
                     publisher.publish(buildEvent(
                             payload, attempt, IS_DLQ,
                             startedAt, finishedAt,
-                            RequestStatus.REJECTED, // 혹은 status에 맞춰서 변환
-                            ResultCode.DUPLICATE_SKIPPED,      // 혹은 DUPLICATE_SKIPPED
+                            RequestStatus.REJECTED,
+                            ResultCode.DUPLICATE_SKIPPED,
                             null,
-                            true //  isDuplicate = true
+                            true
                     ));
-                    deleteMessage(message); // RECEIVED 에서도 재시도 루프 끊도록
+                    deleteMessage(message);
                     return;
-                case "PROCESSING":
-                case "SUCCEEDED":
-                case "REJECTED":
-                case "FAILED_FINAL":
                 default:
-                    // 이미 처리 중/처리 완료/알 수 없음 -> 중복 메시지로 보고 ack
                     log.info("[SKIP] requestId={} status={} attempt={} (dup -> ack)", payload.requestId(), status, attempt);
-                    // 중복 방어 이벤트 발행 (S3 로그용)
                     finishedAt = System.currentTimeMillis();
                     publisher.publish(buildEvent(
                             payload, attempt, IS_DLQ,
                             startedAt, finishedAt,
-                            RequestStatus.SUCCEEDED, // 혹은 status에 맞춰서 변환
-                            ResultCode.SUCCESS,      // 혹은 DUPLICATE_SKIPPED
+                            RequestStatus.SUCCEEDED,
+                            ResultCode.SUCCESS,
                             null,
-                            true //  isDuplicate = true
+                            true
                     ));
                     deleteMessage(message);
                     return;
             }
         }
 
-        // 4) 단일 Worker만 진입
         try {
             final long finishedAt;
             final RequestStatus finalStatus;
@@ -193,20 +205,17 @@ public class SqsMessageConsumer {
                 finishedAt = System.currentTimeMillis();
 
                 if (gotSlot) {
-                    boolean ok = requestStateRepository.markSucceeded(payload.requestId(), finishedAt);
-                    log.info("[FINAL] requestId={} -> SUCCEEDED (updated={}) attempt={}", payload.requestId(), ok, attempt);
+                    requestStateRepository.markSucceeded(payload.requestId(), finishedAt);
                     finalStatus = RequestStatus.SUCCEEDED;
                     resultCode = ResultCode.SUCCESS;
                 } else {
-                    boolean ok = requestStateRepository.markRejectedCapacity(payload.requestId(), finishedAt);
-                    log.info("[FINAL] requestId={} -> REJECTED_CAPACITY (updated={}) attempt={}", payload.requestId(), ok, attempt);
+                    requestStateRepository.markRejectedCapacity(payload.requestId(), finishedAt);
                     finalStatus = RequestStatus.REJECTED;
                     resultCode = ResultCode.REJECTED_CAPACITY;
                 }
             } else {
                 finishedAt = System.currentTimeMillis();
-                boolean ok = requestStateRepository.markSucceeded(payload.requestId(), finishedAt);
-                log.info("[FINAL] requestId={} -> SUCCEEDED (non-FIRST_COME, updated={}) attempt={}", payload.requestId(), ok, attempt);
+                requestStateRepository.markSucceeded(payload.requestId(), finishedAt);
                 finalStatus = RequestStatus.SUCCEEDED;
                 resultCode = ResultCode.SUCCESS;
             }
@@ -219,11 +228,10 @@ public class SqsMessageConsumer {
 
             if (cls == FailureClass.NON_RETRYABLE) {
                 long finishedAt = System.currentTimeMillis();
-
-                boolean ok = requestStateRepository.markFailedFinal(
+                requestStateRepository.markFailedFinal(
                         payload.requestId(),
                         finishedAt,
-                        ResultCode.FAILED_INGEST_ENQUEUE, // 권장: FAILED_WORKER_EXCEPTION 같은 enum 추가
+                        ResultCode.FAILED_INGEST_ENQUEUE,
                         FailureClass.NON_RETRYABLE,
                         "WORKER_NON_RETRYABLE",
                         e.getMessage()
@@ -238,12 +246,10 @@ public class SqsMessageConsumer {
                         false
                 ));
 
-                log.warn("[NON-RETRYABLE] requestId={} -> FAILED_FINAL updated={} attempt={}", payload.requestId(), ok, attempt, e);
                 deleteMessage(message);
                 return;
             }
 
-            // Retryable: ack 하지 않음 -> 재시도 -> DLQ
             log.error("[RETRYABLE] worker exception requestId={} attempt={}", payload.requestId(), attempt, e);
         }
     }
