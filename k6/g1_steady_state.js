@@ -7,7 +7,7 @@ import { check, sleep } from "k6";
  * =========================
  */
 const BASE_URL = __ENV.BASE_URL || "http://localhost:8080";
-const EVENT_ID = __ENV.EVENT_ID || "EVT-009";
+const EVENT_ID = __ENV.EVENT_ID || "EVT-008";
 const VUS = Number(__ENV.VUS || 2000);
 const DURATION = __ENV.DURATION || "5m"; // steady-state 유지시간
 
