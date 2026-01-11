@@ -46,6 +46,9 @@ public class SqsMessageConsumer {
     // DLQ consumer 분리 시 true로 두고 재사용 가능
     private static final boolean IS_DLQ = false;
 
+    // ★ [수정] RECEIVED 상태에서 바로 ACK하지 않고, 잠깐 뒤 재시도하기 위한 visibility delay
+    private static final int VISIBILITY_DELAY_SECONDS = 2;
+
     // (옵션) messageAttributes에서 복구할 때 사용할 키(ingest가 messageAttributes로도 넣는다면)
     private static final String MA_REQUEST_ID = "requestId";
     private static final String MA_EVENT_ID   = "eventId";
@@ -114,8 +117,14 @@ public class SqsMessageConsumer {
             boolean acquired = requestStateRepository.tryAcquireProcessing(payload.requestId(), startedAt);
             if (!acquired) {
                 Optional<String> cur = requestStateRepository.getCurrentStatus(payload.requestId());
+                String status = cur.orElse("UNKNOWN");
+                if ("RECEIVED".equals(status)) {
+                    log.info("[DEFER/INVALID] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
+                    deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                    return;
+                }
                 log.info("[SKIP/INVALID] requestId={} already status={}, attempt={}",
-                        payload.requestId(), cur.orElse("UNKNOWN"), attempt);
+                        payload.requestId(), status, attempt);
                 deleteMessage(message);
                 return;
             }
@@ -166,6 +175,9 @@ public class SqsMessageConsumer {
             String status = cur.get();
             switch (status) {
                 case "RECEIVED":
+                    log.info("[DEFER] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
+                    deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                    return;
                 case "QUEUED":
                     log.info("[SKIP] requestId={} status={} attempt={} (race/contend -> ack)", payload.requestId(), status, attempt);
                     long finishedAt = System.currentTimeMillis();
@@ -195,6 +207,10 @@ public class SqsMessageConsumer {
             }
         }
 
+        // ✅ [추가 로그 1] PROCESSING 선점 성공
+        log.info("[ACQUIRED] requestId={} attempt={} startedAt={}",
+                payload.requestId(), attempt, startedAt);
+
         try {
             final long finishedAt;
             final RequestStatus finalStatus;
@@ -202,6 +218,11 @@ public class SqsMessageConsumer {
 
             if (payload.eventType() == EventType.FIRST_COME) {
                 boolean gotSlot = eventCapacityRepository.tryDecrement(payload.eventId());
+
+                // ✅ [추가 로그 2] Capacity 결과
+                log.info("[CAPACITY] eventId={} requestId={} gotSlot={}",
+                        payload.eventId(), payload.requestId(), gotSlot);
+
                 finishedAt = System.currentTimeMillis();
 
                 if (gotSlot) {
@@ -351,6 +372,19 @@ public class SqsMessageConsumer {
                 payload.eventType(), finalStatus, resultCode,
                 ts, delivery, failureOrNull, meta
         );
+    }
+
+    private void deferMessage(Message message, int delaySeconds) {
+        try {
+            sqsClient.changeMessageVisibility(ChangeMessageVisibilityRequest.builder()
+                    .queueUrl(queueUrl)
+                    .receiptHandle(message.receiptHandle())
+                    .visibilityTimeout(Math.max(0, delaySeconds))
+                    .build());
+        } catch (Exception e) {
+            // visibility 변경 실패 시에는 안전하게 재시도를 유도하기 위해 ACK하지 않는다.
+            log.warn("[DEFER FAIL] changeMessageVisibility failed", e);
+        }
     }
 
     private void deleteMessage(Message message) {
