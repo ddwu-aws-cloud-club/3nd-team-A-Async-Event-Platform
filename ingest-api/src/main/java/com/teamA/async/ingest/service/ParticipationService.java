@@ -8,6 +8,7 @@ import com.teamA.async.common.domain.enums.UiResult;
 import com.teamA.async.common.domain.model.RequestItem;
 import com.teamA.async.common.messaging.ParticipationMessage;
 import com.teamA.async.common.transition.StateTransitionService;
+import com.teamA.async.common.transition.TransitionResult;
 import com.teamA.async.ingest.api.dto.ParticipationResponse;
 import com.teamA.async.ingest.ddb.IdempotencyRepository;
 import com.teamA.async.ingest.ddb.RequestWriteRepository;
@@ -45,8 +46,10 @@ public class ParticipationService {
         boolean isDuplicate;
 
         // 1) lock 성공 후 requestId 생성하도록 리팩터링
-        String newRequestId = newRequestId();
-        boolean locked = idempotencyRepository.tryLock(idempotencyPk, newRequestId);
+        // ✅ [문제 1] requestId 단일화: newRequestId를 "절대 사용하지 않는 임시 후보"로만 쓰고,
+        //              participate() 내부의 "실제 ID"는 requestId 하나로만 통일
+        String candidateRequestId = newRequestId();
+        boolean locked = idempotencyRepository.tryLock(idempotencyPk, candidateRequestId);
 
         // 2-A) Lock 실패 => 기존 requestId 반환 (새 requestId 생성 금지 정책 충족)
         if (!locked) {
@@ -62,9 +65,13 @@ public class ParticipationService {
             isDuplicate = true;
 
             // ⚠️ 여기서는 RequestItem을 새로 만들지 않음 (이미 RECEIVED/QUEUED/그 이후 상태로 존재하니까)
+            // ✅ [문제 5] 중복 요청은 SQS/상태전이(QUEUED) 재수행 금지
+            // - 중복인데도 아래 try 블록에서 QUEUED 전이/메시지 enqueue를 시도하면
+            //   requestId 상태와 SQS 메시지 불일치/중복이 다시 생길 수 있음
+            return new ParticipationResponse(requestId, true);
         } else {
             // 최초 요청
-            requestId = newRequestId;
+            requestId = candidateRequestId;
             isDuplicate = false;
 
             long now = System.currentTimeMillis();
@@ -79,62 +86,19 @@ public class ParticipationService {
             requestWriteRepository.putReceived(item);
         }
 
-        // 2-B) Lock 성공 => RequestItem (RECEIVED) 생성 (GSI 미세팅)
-        long now = System.currentTimeMillis();
-        RequestItem item = RequestItem.builder()
-                .requestId(newRequestId)
-                .eventId(eventId)
-                .userId(userId)
-                .status(RequestStatus.RECEIVED)
-                .requestedAt(now)
-                .build();
+        // ✅ [문제 2] RequestItem 중복 생성 제거:
+        // 기존 코드의 "2-B) Lock 성공 => RequestItem (RECEIVED) 생성" 블록은
+        // requestId를 다시 만들거나(또는 다른 변수로) RECEIVED를 2번 쓰는 위험이 있어서 제거함.
 
-        // ❗ G0 규칙: RECEIVED 단계에서는 GSI 세팅하지 않음
-        // 지금 RequestItem.generateKeys()는 GSI도 생성해버리니까, "RECEIVED 전용 키 생성"을 분리하는 걸 추천.
-        // 일단 여기서는 base key만 set하도록 repository에서 강제한다.
-        requestWriteRepository.putReceived(item);
+        // ✅ [문제 4] RECEIVED→QUEUED 전이를 SQS enqueue보다 먼저 수행해서
+        // 워커가 메시지를 먼저 받아도 DDB 상태가 RECEIVED로 남아 defer 무한루프에 빠지지 않게 함.
+        // 실패 처리에서 어떤 상태에서 FAILED_FINAL로 내릴지 기억
+        RequestStatus statusForFailureTransition = RequestStatus.RECEIVED;
 
-        // 중복이든 아니든 SQS로 보내기
+        // 최초 요청일 때만 QUEUED 전이(및 SQS enqueue)를 수행
+        long queuedAt = System.currentTimeMillis();
+
         try {
-            // 3) SQS enqueue 전에 queuedAt 확정 (Worker 생성 금지 규칙)
-            long queuedAt = System.currentTimeMillis();
-
-            ParticipationMessage msg = new ParticipationMessage(
-                    newRequestId, eventId, userId, queuedAt, EventType.FIRST_COME
-            );
-
-            String body = objectMapper.writeValueAsString(msg);
-
-            Map<String, MessageAttributeValue> attributes = Map.of(
-                    "requestId", MessageAttributeValue.builder()
-                            .dataType("String")
-                            .stringValue(newRequestId)
-                            .build(),
-                    "eventId", MessageAttributeValue.builder()
-                            .dataType("String")
-                            .stringValue(eventId)
-                            .build(),
-                    "userId", MessageAttributeValue.builder()
-                            .dataType("String")
-                            .stringValue(userId)
-                            .build(),
-                    "eventType", MessageAttributeValue.builder()
-                            .dataType("String")
-                            .stringValue(EventType.FIRST_COME.name())
-                            .build(),
-                    "queuedAt", MessageAttributeValue.builder()
-                            .dataType("String")
-                            .stringValue(Long.toString(queuedAt))
-                            .build()
-            );
-
-            sqsClient.sendMessage(r -> r
-                    .queueUrl(queueUrl)
-                    .messageBody(body)
-                    .messageAttributes(attributes)
-            );
-
-            // 최초 요청일 때만 RECEIVED -> QUEUED 전이
             if (!isDuplicate) {
                 Map<String, Object> patch = new HashMap<>();
                 patch.put("queuedAt", queuedAt);
@@ -143,11 +107,57 @@ public class ParticipationService {
                 patch.put("GSI2PK", DdbKeyFactory.eventPk(eventId));
                 patch.put("GSI2SK", DdbKeyFactory.eventRequestSk(queuedAt, requestId));
 
-                stateTransitionService.transition(
+                // ✅ [문제 5] 전이 결과 검증: TransitionResult 기반으로 성공 여부 확인
+                // - TransitionResult는 boolean이 아니고, Success/ConditionFailed/UnexpectedError 등으로 내려옴
+                TransitionResult transitionResult = stateTransitionService.transition(
                         requestId,
                         RequestStatus.RECEIVED,
                         RequestStatus.QUEUED,
                         patch
+                );
+
+                // SUCCESS가 아니면 SQS enqueue 금지
+                if (!(transitionResult instanceof TransitionResult.Success)) {
+                    // 전이 실패면 지금 케이스는 "SQS를 보내면 안 되는" 케이스
+                    throw new IllegalStateException("RECEIVED -> QUEUED transition failed: " + transitionResult);
+                }
+
+                statusForFailureTransition = RequestStatus.QUEUED;
+
+                // ✅ [문제 3] 중복 요청은 SQS enqueue 금지 (최초 요청일 때만 보냄)
+                ParticipationMessage msg = new ParticipationMessage(
+                        requestId, eventId, userId, queuedAt, EventType.FIRST_COME
+                );
+
+                String body = objectMapper.writeValueAsString(msg);
+
+                Map<String, MessageAttributeValue> attributes = Map.of(
+                        "requestId", MessageAttributeValue.builder()
+                                .dataType("String")
+                                .stringValue(requestId)
+                                .build(),
+                        "eventId", MessageAttributeValue.builder()
+                                .dataType("String")
+                                .stringValue(eventId)
+                                .build(),
+                        "userId", MessageAttributeValue.builder()
+                                .dataType("String")
+                                .stringValue(userId)
+                                .build(),
+                        "eventType", MessageAttributeValue.builder()
+                                .dataType("String")
+                                .stringValue(EventType.FIRST_COME.name())
+                                .build(),
+                        "queuedAt", MessageAttributeValue.builder()
+                                .dataType("String")
+                                .stringValue(Long.toString(queuedAt))
+                                .build()
+                );
+
+                sqsClient.sendMessage(r -> r
+                        .queueUrl(queueUrl)
+                        .messageBody(body)
+                        .messageAttributes(attributes)
                 );
             }
 
@@ -166,6 +176,8 @@ public class ParticipationService {
             }
 
             // 최초 요청이고 SQS 전송 실패 → FAILED_FINAL로 마무리
+            // ✅ [문제 4] 전이를 QUEUED까지 해둔 뒤 실패했을 수 있으므로,
+            //            현재 위치(statusForFailureTransition)에서 FAILED_FINAL로 내림
             Map<String, Object> patch = new HashMap<>();
             patch.put("resultCode", ResultCode.FAILED_INGEST_ENQUEUE);
             patch.put("uiResult", UiResult.FAILED);
@@ -174,7 +186,7 @@ public class ParticipationService {
 
             stateTransitionService.transition(
                     requestId,
-                    RequestStatus.RECEIVED,
+                    statusForFailureTransition,
                     RequestStatus.FAILED_FINAL,
                     patch
             );
