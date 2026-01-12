@@ -14,7 +14,7 @@ public class ParticipationController {
     private final ParticipationService participationService;
     private final UserResolver userResolver;
 
-    @PostMapping("/events/{eventId}/participations")
+    @PostMapping("/events/{eventId}/apply")
     public ResponseEntity<ParticipationResponse> participate(@PathVariable String eventId) {
         String userId = userResolver.currentUserId(); // JWT에서만 추출
         ParticipationResponse res = participationService.participate(eventId, userId);
