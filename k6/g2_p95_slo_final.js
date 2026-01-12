@@ -2,52 +2,52 @@ import http from "k6/http";
 import { check, sleep } from "k6";
 
 /**
+ * ===============================
  * ENV
- * BASE_URL=http://alb-async-ingest-xxxx.ap-northeast-2.elb.amazonaws.com
- * EVENT_ID=EVT-P95-1
+ * ===============================
+ * BASE_URL
+ * EVENT_ID
+ * ACCESS_TOKEN
  */
+
 const BASE_URL = __ENV.BASE_URL;
 const EVENT_ID = __ENV.EVENT_ID;
+const TOKEN = __ENV.ACCESS_TOKEN;
 
 export const options = {
     discardResponseBodies: true,
 
     scenarios: {
-        slo: {
+        slo_measurement: {
             executor: "constant-arrival-rate",
-            rate: 30,            // 초당 30 req (SLO용 안정 트래픽)
+            rate: 30,            // 🔑 초당 30 req (SLO 분모)
             timeUnit: "1s",
-            duration: "5m",
+            duration: "5m",      // 🔑 충분한 샘플 수
             preAllocatedVUs: 200,
             maxVUs: 800,
         },
     },
 
     thresholds: {
-        http_req_failed: ["rate<0.01"],      // 실패율 < 1%
-        http_req_duration: ["p(95)<3000"],   // p95 < 3s (SLO 핵심)
+        http_req_failed: ["rate<0.01"],
+
+        // 🔑 SLO 핵심
+        http_req_duration: ["p(95)<3000"], // p95 < 3s
     },
 };
 
 export default function () {
-    /**
-     * 중요:
-     * - requestId는 서버에서 생성해도 되지만
-     * - 명시적으로 보내도 문제 없음
-     * - userId는 이제 멱등성과 무관
-     */
-    const payload = JSON.stringify({
-        userId: `user-${__VU}-${__ITER}`, // 있어도 되고 없어도 됨
-    });
+    const userId = `user-${__VU}-${__ITER}`;
 
     const res = http.post(
         `${BASE_URL}/events/${EVENT_ID}/participations`,
-        payload,
+        null,
         {
             headers: {
+                "Authorization": `Bearer ${TOKEN}`,
                 "Content-Type": "application/json",
             },
-            timeout: "15s",
+            timeout: "5s",
         }
     );
 

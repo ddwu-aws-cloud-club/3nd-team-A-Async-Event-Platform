@@ -49,6 +49,16 @@ public class SqsMessageConsumer {
     // ★ [수정] RECEIVED 상태에서 바로 ACK하지 않고, 잠깐 뒤 재시도하기 위한 visibility delay
     private static final int VISIBILITY_DELAY_SECONDS = 2;
 
+    // ✅ [수정] RECEIVED 무한 defer 방지용 상한 (attempt 기준)
+    private static final int MAX_RECEIVED_RETRY = 3;
+
+    // ✅ [수정] RETRYABLE 무한 재등장 방지용 상한 (attempt 기준)
+    private static final int MAX_RETRYABLE_RETRY = 5;
+
+    // ✅ [수정] RETRYABLE backoff (최대 60초)
+    private static final int RETRYABLE_BACKOFF_BASE_SECONDS = 2;
+    private static final int RETRYABLE_BACKOFF_MAX_SECONDS = 60;
+
     // (옵션) messageAttributes에서 복구할 때 사용할 키(ingest가 messageAttributes로도 넣는다면)
     private static final String MA_REQUEST_ID = "requestId";
     private static final String MA_EVENT_ID   = "eventId";
@@ -119,8 +129,36 @@ public class SqsMessageConsumer {
                 Optional<String> cur = requestStateRepository.getCurrentStatus(payload.requestId());
                 String status = cur.orElse("UNKNOWN");
                 if ("RECEIVED".equals(status)) {
-                    log.info("[DEFER/INVALID] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
-                    deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                    // ✅ [수정] RECEIVED 무한 defer 방지
+                    if (attempt <= MAX_RECEIVED_RETRY) {
+                        log.info("[DEFER/INVALID] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
+                        deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                        return;
+                    }
+
+                    long finishedAt = System.currentTimeMillis();
+                    boolean updated = requestStateRepository.markFailedFinal(
+                            payload.requestId(),
+                            finishedAt,
+                            ResultCode.FAILED_INGEST_ENQUEUE,
+                            FailureClass.NON_RETRYABLE,
+                            "STALE_RECEIVED",
+                            "Request stuck in RECEIVED state (invalid-body path)"
+                    );
+
+                    publisher.publish(buildEvent(
+                            payload, attempt, IS_DLQ,
+                            startedAt, finishedAt,
+                            RequestStatus.FAILED_FINAL,
+                            ResultCode.FAILED_INGEST_ENQUEUE,
+                            new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "STALE_RECEIVED", "Exceeded RECEIVED retry limit"),
+                            false
+                    ));
+
+                    log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (STALE_RECEIVED/INVALID)",
+                            payload.requestId(), updated, attempt);
+
+                    deleteMessage(message);
                     return;
                 }
                 log.info("[SKIP/INVALID] requestId={} already status={}, attempt={}",
@@ -175,12 +213,40 @@ public class SqsMessageConsumer {
             String status = cur.get();
             switch (status) {
                 case "RECEIVED":
-                    log.info("[DEFER] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
-                    deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                    // ✅ [수정] RECEIVED 무한 defer 방지
+                    if (attempt <= MAX_RECEIVED_RETRY) {
+                        log.info("[DEFER] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
+                        deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                        return;
+                    }
+
+                    long finishedAt = System.currentTimeMillis();
+                    boolean updated = requestStateRepository.markFailedFinal(
+                            payload.requestId(),
+                            finishedAt,
+                            ResultCode.FAILED_INGEST_ENQUEUE,
+                            FailureClass.NON_RETRYABLE,
+                            "STALE_RECEIVED",
+                            "Request stuck in RECEIVED state"
+                    );
+
+                    publisher.publish(buildEvent(
+                            payload, attempt, IS_DLQ,
+                            startedAt, finishedAt,
+                            RequestStatus.FAILED_FINAL,
+                            ResultCode.FAILED_INGEST_ENQUEUE,
+                            new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "STALE_RECEIVED", "Exceeded RECEIVED retry limit"),
+                            false
+                    ));
+
+                    log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (STALE_RECEIVED)",
+                            payload.requestId(), updated, attempt);
+
+                    deleteMessage(message);
                     return;
                 case "QUEUED":
                     log.info("[SKIP] requestId={} status={} attempt={} (race/contend -> ack)", payload.requestId(), status, attempt);
-                    long finishedAt = System.currentTimeMillis();
+                    finishedAt = System.currentTimeMillis();
                     publisher.publish(buildEvent(
                             payload, attempt, IS_DLQ,
                             startedAt, finishedAt,
@@ -271,7 +337,37 @@ public class SqsMessageConsumer {
                 return;
             }
 
-            log.error("[RETRYABLE] worker exception requestId={} attempt={}", payload.requestId(), attempt, e);
+            // ✅ [수정] RETRYABLE 무한 재등장 방지
+            if (attempt <= MAX_RETRYABLE_RETRY) {
+                int backoff = computeRetryableBackoffSeconds(attempt);
+                log.error("[RETRYABLE/DEFER] requestId={} attempt={} backoff={}s", payload.requestId(), attempt, backoff, e);
+                deferMessage(message, backoff);
+                return;
+            }
+
+            long finishedAt = System.currentTimeMillis();
+            boolean updated = requestStateRepository.markFailedFinal(
+                    payload.requestId(),
+                    finishedAt,
+                    ResultCode.FAILED_INGEST_ENQUEUE,
+                    FailureClass.RETRYABLE,
+                    "RETRYABLE_EXHAUSTED",
+                    "Exceeded retryable retry limit: " + e.getClass().getSimpleName()
+            );
+
+            publisher.publish(buildEvent(
+                    payload, attempt, IS_DLQ,
+                    startedAt, finishedAt,
+                    RequestStatus.FAILED_FINAL,
+                    ResultCode.FAILED_INGEST_ENQUEUE,
+                    new ParticipationProcessedFailure(FailureClass.RETRYABLE, "RETRYABLE_EXHAUSTED", e.getMessage()),
+                    false
+            ));
+
+            log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (RETRYABLE_EXHAUSTED)",
+                    payload.requestId(), updated, attempt);
+
+            deleteMessage(message);
         }
     }
 
@@ -396,5 +492,13 @@ public class SqsMessageConsumer {
         } catch (Exception e) {
             log.warn("[ACK FAIL] deleteMessage failed", e);
         }
+    }
+
+    // ✅ [수정] RETRYABLE backoff 계산 (2,4,8,16... 최대 60초)
+    private int computeRetryableBackoffSeconds(int attempt) {
+        int exp = Math.max(0, attempt - 1);
+        long backoff = (long) RETRYABLE_BACKOFF_BASE_SECONDS << exp; // 2 * 2^(attempt-1)
+        if (backoff > RETRYABLE_BACKOFF_MAX_SECONDS) backoff = RETRYABLE_BACKOFF_MAX_SECONDS;
+        return (int) backoff;
     }
 }
