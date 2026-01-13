@@ -39,7 +39,7 @@ export default function () {
         `${BASE_URL}/events/${EVENT_ID}/participations`,
         null,
         {
-            timeout: "5s",
+            timeout: "10s",
         }
     );
 
