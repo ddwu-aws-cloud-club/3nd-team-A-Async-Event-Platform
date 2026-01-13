@@ -32,7 +32,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             String token = auth.substring(7);
             try {
                 String userId = jwtProvider.parseUserId(token);
-
+            //    System.out.println("검증 성공된 유저 ID: " + userId); // 디버깅용
+                
                 // principal=userId, 권한은 G0에선 빈 리스트
                 UsernamePasswordAuthenticationToken authentication =
                         new UsernamePasswordAuthenticationToken(userId, null, List.of());
@@ -40,6 +41,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 SecurityContextHolder.getContext().setAuthentication(authentication);
 
             } catch (Exception e) {
+            //    System.out.println("토큰 검증 에러 원인: " + e.getMessage()); //  구체적인 에러 로그
                 // 토큰이 이상하면 401로
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 return;
