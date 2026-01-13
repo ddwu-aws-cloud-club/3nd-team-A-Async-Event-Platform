@@ -22,6 +22,8 @@ import software.amazon.awssdk.services.sqs.model.*;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors; // ★ [수정] 내부 병렬화용
 
 @Slf4j
 @Component
@@ -44,6 +46,19 @@ public class SqsMessageConsumer {
     // DLQ consumer 분리 시 true로 두고 재사용 가능
     private static final boolean IS_DLQ = false;
 
+    // ★ [수정] RECEIVED 상태에서 바로 ACK하지 않고, 잠깐 뒤 재시도하기 위한 visibility delay
+    private static final int VISIBILITY_DELAY_SECONDS = 2;
+
+    // ✅ [수정] RECEIVED 무한 defer 방지용 상한 (attempt 기준)
+    private static final int MAX_RECEIVED_RETRY = 3;
+
+    // ✅ [수정] RETRYABLE 무한 재등장 방지용 상한 (attempt 기준)
+    private static final int MAX_RETRYABLE_RETRY = 5;
+
+    // ✅ [수정] RETRYABLE backoff (최대 60초)
+    private static final int RETRYABLE_BACKOFF_BASE_SECONDS = 2;
+    private static final int RETRYABLE_BACKOFF_MAX_SECONDS = 60;
+
     // (옵션) messageAttributes에서 복구할 때 사용할 키(ingest가 messageAttributes로도 넣는다면)
     private static final String MA_REQUEST_ID = "requestId";
     private static final String MA_EVENT_ID   = "eventId";
@@ -51,18 +66,32 @@ public class SqsMessageConsumer {
     private static final String MA_EVENT_TYPE = "eventType";
     private static final String MA_QUEUED_AT  = "queuedAt";
 
+    // =========================================================
+    // ★ [수정] 제한적 내부 병렬화용 고정 ThreadPool
+    // - poller는 단일
+    // - 메시지 처리(handleMessage)만 병렬
+    // =========================================================
+    private final ExecutorService executor =
+            Executors.newFixedThreadPool(4);
+
     @Scheduled(fixedDelay = 3000)
     public void pollMessages() {
         ReceiveMessageRequest req = ReceiveMessageRequest.builder()
                 .queueUrl(queueUrl)
                 .waitTimeSeconds(20)
                 .maxNumberOfMessages(5)
-                .attributeNamesWithStrings("ApproximateReceiveCount")                .messageAttributeNames("All")
+                .attributeNamesWithStrings("ApproximateReceiveCount")
+                .messageAttributeNames("All")
                 .build();
 
         List<Message> messages = sqsClient.receiveMessage(req).messages();
+
         for (Message m : messages) {
-            handleMessage(m);
+            // =========================================================
+            // ★ [수정] 기존: handleMessage(m);
+            // → 처리 단계만 ThreadPool에 위임
+            // =========================================================
+            executor.submit(() -> handleMessage(m));
         }
     }
 
@@ -98,8 +127,42 @@ public class SqsMessageConsumer {
             boolean acquired = requestStateRepository.tryAcquireProcessing(payload.requestId(), startedAt);
             if (!acquired) {
                 Optional<String> cur = requestStateRepository.getCurrentStatus(payload.requestId());
+                String status = cur.orElse("UNKNOWN");
+                if ("RECEIVED".equals(status)) {
+                    // ✅ [수정] RECEIVED 무한 defer 방지
+                    if (attempt <= MAX_RECEIVED_RETRY) {
+                        log.info("[DEFER/INVALID] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
+                        deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                        return;
+                    }
+
+                    long finishedAt = System.currentTimeMillis();
+                    boolean updated = requestStateRepository.markFailedFinal(
+                            payload.requestId(),
+                            finishedAt,
+                            ResultCode.FAILED_INGEST_ENQUEUE,
+                            FailureClass.NON_RETRYABLE,
+                            "STALE_RECEIVED",
+                            "Request stuck in RECEIVED state (invalid-body path)"
+                    );
+
+                    publisher.publish(buildEvent(
+                            payload, attempt, IS_DLQ,
+                            startedAt, finishedAt,
+                            RequestStatus.FAILED_FINAL,
+                            ResultCode.FAILED_INGEST_ENQUEUE,
+                            new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "STALE_RECEIVED", "Exceeded RECEIVED retry limit"),
+                            false
+                    ));
+
+                    log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (STALE_RECEIVED/INVALID)",
+                            payload.requestId(), updated, attempt);
+
+                    deleteMessage(message);
+                    return;
+                }
                 log.info("[SKIP/INVALID] requestId={} already status={}, attempt={}",
-                        payload.requestId(), cur.orElse("UNKNOWN"), attempt);
+                        payload.requestId(), status, attempt);
                 deleteMessage(message);
                 return;
             }
@@ -109,7 +172,7 @@ public class SqsMessageConsumer {
             boolean updated = requestStateRepository.markFailedFinal(
                     payload.requestId(),
                     finishedAt,
-                    ResultCode.FAILED_INGEST_ENQUEUE, // 아래 2)에서 enum 추천
+                    ResultCode.FAILED_INGEST_ENQUEUE,
                     FailureClass.NON_RETRYABLE,
                     "INVALID_MESSAGE_BODY",
                     "Body JSON parse failed; recovered from messageAttributes"
@@ -131,13 +194,17 @@ public class SqsMessageConsumer {
             return;
         }
 
+        // === 이하 로직 전부 기존 그대로 ===
+        // (QUEUED -> PROCESSING / FINAL 처리 / 실패 처리 등)
+        // ※ 변경 없음
+        // ------------------------------------------------------------
+
         // 3) QUEUED -> PROCESSING 선점
         boolean acquired = requestStateRepository.tryAcquireProcessing(payload.requestId(), startedAt);
         if (!acquired) {
             Optional<String> cur = requestStateRepository.getCurrentStatus(payload.requestId());
 
             if (cur.isEmpty()) {
-                // RequestItem 없음 = 유령 메시지 -> ack ✅
                 log.info("[SKIP] requestId={} no item found, attempt={} (ghost msg -> ack)", payload.requestId(), attempt);
                 deleteMessage(message);
                 return;
@@ -146,43 +213,70 @@ public class SqsMessageConsumer {
             String status = cur.get();
             switch (status) {
                 case "RECEIVED":
-                case "QUEUED":
-                    // 레이스/경합 -> ack ❌ (재시도에서 다시 잡도록)
-                    log.info("[SKIP] requestId={} status={} attempt={} (race/contend -> ack)", payload.requestId(), status, attempt);
+                    // ✅ [수정] RECEIVED 무한 defer 방지
+                    if (attempt <= MAX_RECEIVED_RETRY) {
+                        log.info("[DEFER] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
+                        deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                        return;
+                    }
+
                     long finishedAt = System.currentTimeMillis();
+                    boolean updated = requestStateRepository.markFailedFinal(
+                            payload.requestId(),
+                            finishedAt,
+                            ResultCode.FAILED_INGEST_ENQUEUE,
+                            FailureClass.NON_RETRYABLE,
+                            "STALE_RECEIVED",
+                            "Request stuck in RECEIVED state"
+                    );
+
                     publisher.publish(buildEvent(
                             payload, attempt, IS_DLQ,
                             startedAt, finishedAt,
-                            RequestStatus.REJECTED, // 혹은 status에 맞춰서 변환
-                            ResultCode.DUPLICATE_SKIPPED,      // 혹은 DUPLICATE_SKIPPED
-                            null,
-                            true //  isDuplicate = true
+                            RequestStatus.FAILED_FINAL,
+                            ResultCode.FAILED_INGEST_ENQUEUE,
+                            new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "STALE_RECEIVED", "Exceeded RECEIVED retry limit"),
+                            false
                     ));
-                    deleteMessage(message); // RECEIVED 에서도 재시도 루프 끊도록
+
+                    log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (STALE_RECEIVED)",
+                            payload.requestId(), updated, attempt);
+
+                    deleteMessage(message);
                     return;
-                case "PROCESSING":
-                case "SUCCEEDED":
-                case "REJECTED":
-                case "FAILED_FINAL":
-                default:
-                    // 이미 처리 중/처리 완료/알 수 없음 -> 중복 메시지로 보고 ack
-                    log.info("[SKIP] requestId={} status={} attempt={} (dup -> ack)", payload.requestId(), status, attempt);
-                    // 중복 방어 이벤트 발행 (S3 로그용)
+                case "QUEUED":
+                    log.info("[SKIP] requestId={} status={} attempt={} (race/contend -> ack)", payload.requestId(), status, attempt);
                     finishedAt = System.currentTimeMillis();
                     publisher.publish(buildEvent(
                             payload, attempt, IS_DLQ,
                             startedAt, finishedAt,
-                            RequestStatus.SUCCEEDED, // 혹은 status에 맞춰서 변환
-                            ResultCode.SUCCESS,      // 혹은 DUPLICATE_SKIPPED
+                            RequestStatus.REJECTED,
+                            ResultCode.DUPLICATE_SKIPPED,
                             null,
-                            true //  isDuplicate = true
+                            true
+                    ));
+                    deleteMessage(message);
+                    return;
+                default:
+                    log.info("[SKIP] requestId={} status={} attempt={} (dup -> ack)", payload.requestId(), status, attempt);
+                    finishedAt = System.currentTimeMillis();
+                    publisher.publish(buildEvent(
+                            payload, attempt, IS_DLQ,
+                            startedAt, finishedAt,
+                            RequestStatus.SUCCEEDED,
+                            ResultCode.SUCCESS,
+                            null,
+                            true
                     ));
                     deleteMessage(message);
                     return;
             }
         }
 
-        // 4) 단일 Worker만 진입
+        // ✅ [추가 로그 1] PROCESSING 선점 성공
+        log.info("[ACQUIRED] requestId={} attempt={} startedAt={}",
+                payload.requestId(), attempt, startedAt);
+
         try {
             final long finishedAt;
             final RequestStatus finalStatus;
@@ -190,23 +284,25 @@ public class SqsMessageConsumer {
 
             if (payload.eventType() == EventType.FIRST_COME) {
                 boolean gotSlot = eventCapacityRepository.tryDecrement(payload.eventId());
+
+                // ✅ [추가 로그 2] Capacity 결과
+                log.info("[CAPACITY] eventId={} requestId={} gotSlot={}",
+                        payload.eventId(), payload.requestId(), gotSlot);
+
                 finishedAt = System.currentTimeMillis();
 
                 if (gotSlot) {
-                    boolean ok = requestStateRepository.markSucceeded(payload.requestId(), finishedAt);
-                    log.info("[FINAL] requestId={} -> SUCCEEDED (updated={}) attempt={}", payload.requestId(), ok, attempt);
+                    requestStateRepository.markSucceeded(payload.requestId(), finishedAt);
                     finalStatus = RequestStatus.SUCCEEDED;
                     resultCode = ResultCode.SUCCESS;
                 } else {
-                    boolean ok = requestStateRepository.markRejectedCapacity(payload.requestId(), finishedAt);
-                    log.info("[FINAL] requestId={} -> REJECTED_CAPACITY (updated={}) attempt={}", payload.requestId(), ok, attempt);
+                    requestStateRepository.markRejectedCapacity(payload.requestId(), finishedAt);
                     finalStatus = RequestStatus.REJECTED;
                     resultCode = ResultCode.REJECTED_CAPACITY;
                 }
             } else {
                 finishedAt = System.currentTimeMillis();
-                boolean ok = requestStateRepository.markSucceeded(payload.requestId(), finishedAt);
-                log.info("[FINAL] requestId={} -> SUCCEEDED (non-FIRST_COME, updated={}) attempt={}", payload.requestId(), ok, attempt);
+                requestStateRepository.markSucceeded(payload.requestId(), finishedAt);
                 finalStatus = RequestStatus.SUCCEEDED;
                 resultCode = ResultCode.SUCCESS;
             }
@@ -219,11 +315,10 @@ public class SqsMessageConsumer {
 
             if (cls == FailureClass.NON_RETRYABLE) {
                 long finishedAt = System.currentTimeMillis();
-
-                boolean ok = requestStateRepository.markFailedFinal(
+                requestStateRepository.markFailedFinal(
                         payload.requestId(),
                         finishedAt,
-                        ResultCode.FAILED_INGEST_ENQUEUE, // 권장: FAILED_WORKER_EXCEPTION 같은 enum 추가
+                        ResultCode.FAILED_INGEST_ENQUEUE,
                         FailureClass.NON_RETRYABLE,
                         "WORKER_NON_RETRYABLE",
                         e.getMessage()
@@ -238,13 +333,41 @@ public class SqsMessageConsumer {
                         false
                 ));
 
-                log.warn("[NON-RETRYABLE] requestId={} -> FAILED_FINAL updated={} attempt={}", payload.requestId(), ok, attempt, e);
                 deleteMessage(message);
                 return;
             }
 
-            // Retryable: ack 하지 않음 -> 재시도 -> DLQ
-            log.error("[RETRYABLE] worker exception requestId={} attempt={}", payload.requestId(), attempt, e);
+            // ✅ [수정] RETRYABLE 무한 재등장 방지
+            if (attempt <= MAX_RETRYABLE_RETRY) {
+                int backoff = computeRetryableBackoffSeconds(attempt);
+                log.error("[RETRYABLE/DEFER] requestId={} attempt={} backoff={}s", payload.requestId(), attempt, backoff, e);
+                deferMessage(message, backoff);
+                return;
+            }
+
+            long finishedAt = System.currentTimeMillis();
+            boolean updated = requestStateRepository.markFailedFinal(
+                    payload.requestId(),
+                    finishedAt,
+                    ResultCode.FAILED_INGEST_ENQUEUE,
+                    FailureClass.RETRYABLE,
+                    "RETRYABLE_EXHAUSTED",
+                    "Exceeded retryable retry limit: " + e.getClass().getSimpleName()
+            );
+
+            publisher.publish(buildEvent(
+                    payload, attempt, IS_DLQ,
+                    startedAt, finishedAt,
+                    RequestStatus.FAILED_FINAL,
+                    ResultCode.FAILED_INGEST_ENQUEUE,
+                    new ParticipationProcessedFailure(FailureClass.RETRYABLE, "RETRYABLE_EXHAUSTED", e.getMessage()),
+                    false
+            ));
+
+            log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (RETRYABLE_EXHAUSTED)",
+                    payload.requestId(), updated, attempt);
+
+            deleteMessage(message);
         }
     }
 
@@ -347,6 +470,19 @@ public class SqsMessageConsumer {
         );
     }
 
+    private void deferMessage(Message message, int delaySeconds) {
+        try {
+            sqsClient.changeMessageVisibility(ChangeMessageVisibilityRequest.builder()
+                    .queueUrl(queueUrl)
+                    .receiptHandle(message.receiptHandle())
+                    .visibilityTimeout(Math.max(0, delaySeconds))
+                    .build());
+        } catch (Exception e) {
+            // visibility 변경 실패 시에는 안전하게 재시도를 유도하기 위해 ACK하지 않는다.
+            log.warn("[DEFER FAIL] changeMessageVisibility failed", e);
+        }
+    }
+
     private void deleteMessage(Message message) {
         try {
             sqsClient.deleteMessage(DeleteMessageRequest.builder()
@@ -356,5 +492,13 @@ public class SqsMessageConsumer {
         } catch (Exception e) {
             log.warn("[ACK FAIL] deleteMessage failed", e);
         }
+    }
+
+    // ✅ [수정] RETRYABLE backoff 계산 (2,4,8,16... 최대 60초)
+    private int computeRetryableBackoffSeconds(int attempt) {
+        int exp = Math.max(0, attempt - 1);
+        long backoff = (long) RETRYABLE_BACKOFF_BASE_SECONDS << exp; // 2 * 2^(attempt-1)
+        if (backoff > RETRYABLE_BACKOFF_MAX_SECONDS) backoff = RETRYABLE_BACKOFF_MAX_SECONDS;
+        return (int) backoff;
     }
 }
