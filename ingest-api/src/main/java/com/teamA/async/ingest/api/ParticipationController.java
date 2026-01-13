@@ -4,11 +4,13 @@ import com.teamA.async.ingest.api.dto.ParticipationResponse;
 import com.teamA.async.ingest.auth.UserResolver;
 import com.teamA.async.ingest.service.ParticipationService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 @RestController
 @RequiredArgsConstructor
+@Slf4j
 public class ParticipationController {
 
     private final ParticipationService participationService;
@@ -17,7 +19,11 @@ public class ParticipationController {
     @PostMapping("/events/{eventId}/participations")
     public ResponseEntity<ParticipationResponse> participate(@PathVariable String eventId) {
         String userId = userResolver.currentUserId(); // JWT에서만 추출
+
+        log.info("[INGEST HIT] eventId={}, userId={}", eventId, userId);
+
         ParticipationResponse res = participationService.participate(eventId, userId);
         return ResponseEntity.accepted().body(res); // 항상 202
+
     }
 }
