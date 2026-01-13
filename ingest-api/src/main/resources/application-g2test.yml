@@ -1,5 +1,0 @@
-# g2test 전용 설정
-logging:
-  level:
-    root: INFO
-    com.team.async: DEBUG
