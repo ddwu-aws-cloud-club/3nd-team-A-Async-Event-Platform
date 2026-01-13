@@ -45,24 +45,6 @@ function EventList() {
         <h2 style={{ marginBottom: '30px', textAlign: 'left', paddingLeft: '10px' }}>
           1️⃣ 진행 중인 이벤트
         </h2>
-        <button 
-          onClick={() => navigate('/history')} // 👈 클릭 시 내역 페이지로 이동
-          style={{
-            padding: '10px 20px',
-            backgroundColor: '#3E2723',
-            color: 'white',
-            border: 'none',
-            borderRadius: '25px',
-            fontWeight: 'bold',
-            cursor: 'pointer',
-            boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
-            transition: 'all 0.2s'
-          }}
-          onMouseEnter={(e) => e.target.style.backgroundColor = '#5D4037'}
-          onMouseLeave={(e) => e.target.style.backgroundColor = '#3E2723'}
-        >
-          📋 내 신청 내역
-        </button>
         
         <div style={{ 
           display: 'flex', 

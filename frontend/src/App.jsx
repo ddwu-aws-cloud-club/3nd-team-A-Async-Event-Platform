@@ -3,13 +3,16 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 
 import EventList from './pages/user/EventList'; 
 import ParticipationHistory from './pages/user/ParticipationHistory';
+import EventDetailHub from './pages/user/EventDetailHub';
 import Result from './pages/user/Result';
 import Login from './pages/user/Login';
-import Navbar from './components/Navbar'; // 상단바 추가
-import EventDetailHub from './pages/user/EventDetailHub';
+import Navbar from './components/Navbar'; 
 
-// import AdminDashboard from './pages/admin/AdminDashboard';
-// import EventCreate from './pages/admin/EventCreate';
+import AdminLayout from './pages/admin/AdminLayout';
+import AdminDashboard from './pages/admin/AdminDashboard';
+import Analytics from './pages/admin/Analytics';
+import DLQManager from './pages/admin/DLQManager';
+import RequestDetail from './pages/admin/RequestDetail'
 
 function App() {
   const [userName, setUserName] = useState(null);
@@ -24,28 +27,32 @@ function App() {
   return (
     <Router>
       <div className="App">
-        {/* 주소에 따라 바뀌는 영역 */}
-        <Navbar userName={userName} />
         <Routes>
-          <Route path="/" element={<EventList />} />
-          <Route path="/login" element={<Login onLoginSuccess={setUserName} />} />
-          
-          {/* 4. EventDetailHub에 addHistory 함수를 전달
-             허브가 이 함수를 받아 내부의 Async나 Lottery 상세 페이지로 다시 던짐
-          */}
-          <Route 
-            path="/event/:id" 
-            element={<EventDetailHub addHistory={addHistory} />} 
-          />
+          {/* 1. 사용자 레이아웃*/}
+          <Route path="/*" element={
+            <>
+              <Navbar userName={userName} />
+              <Routes>
+                <Route path="/" element={<EventList />} />
+                <Route path="/login" element={<Login onLoginSuccess={setUserName} />} />
+                <Route path="/event/:id" element={<EventDetailHub addHistory={addHistory} />} />
+                <Route path="/history" element={<ParticipationHistory history={history} />} />
+                <Route path="/result/:requestId" element={<Result />} />
+              </Routes>
+            </>
+          } />
 
-          {/* 5. 내역 페이지에 쌓인 history 데이터를 전달 */}
-          <Route 
-            path="/history" 
-            element={<ParticipationHistory history={history} />} 
-          />
-
-          {/* 6. 결과 상세 (요청 ID를 주소에 담을 수 있게 설정) */}
-          <Route path="/result/:requestId" element={<Result />} />
+          {/* 2. 관리자 레이아웃 */}
+          <Route path="/admin/*" element={
+            <AdminLayout>
+              <Routes>
+                <Route path="/" element={<AdminDashboard />} />
+                <Route path="/analytics" element={<Analytics />} />
+                <Route path="/dlq" element={<DLQManager />} />
+                <Route path="/search" element={<RequestDetail />} />
+              </Routes>
+            </AdminLayout>
+          } />
         </Routes>
       </div>
     </Router>

@@ -46,7 +46,6 @@ const EventCard = ({ title, type, deadline, status }) => {
         <div>📅 <strong>마감/정원:</strong> {deadline}</div>
         <div>🔔 <strong>상태:</strong> {status}</div>
         
-        {/* 핵심 기술 문서 내용 반영: 공정성 고지 */}
         <div style={{ 
           marginTop: '12px', 
           padding: '8px', 
