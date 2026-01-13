@@ -41,6 +41,10 @@ public class RequestWriteRepository {
         map.put("status", AttributeValue.builder().s(item.getStatus().name()).build());
         map.put("requestedAt", AttributeValue.builder().n(Long.toString(item.getRequestedAt())).build());
 
+        if (item.getEventType() != null) {
+            map.put("eventType", AttributeValue.builder().s(item.getEventType().name()).build());
+        }
+
         // ❌ GSI1PK/GSI1SK/GSI2PK/GSI2SK는 절대 넣지 않음 (RECEIVED 단계 규칙)
 
         dynamoDbClient.putItem(PutItemRequest.builder()

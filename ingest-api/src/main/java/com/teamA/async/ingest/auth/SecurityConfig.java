@@ -28,6 +28,7 @@ public class SecurityConfig {
                         .requestMatchers("/__smoke/**").permitAll()
                         .requestMatchers("/actuator/**").permitAll()
                         .requestMatchers("/events/**").permitAll()
+                        .requestMatchers("/me/**", "/requests/**").permitAll()
                         // OPTIONS 요청은 인증 없이 통과시켜야 CORS가 정상 작동합니다.
                         .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
                         .anyRequest().authenticated()

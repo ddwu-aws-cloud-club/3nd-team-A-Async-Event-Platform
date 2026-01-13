@@ -1,5 +1,6 @@
 package com.teamA.async.ingest.api;
 
+import com.teamA.async.common.domain.enums.EventType;
 import com.teamA.async.ingest.api.dto.ParticipationResponse;
 import com.teamA.async.ingest.auth.UserResolver;
 import com.teamA.async.ingest.service.ParticipationService;
@@ -17,12 +18,12 @@ public class ParticipationController {
     private final UserResolver userResolver;
 
     @PostMapping("/events/{eventId}/apply")
-    public ResponseEntity<ParticipationResponse> participate(@PathVariable String eventId) {
+    public ResponseEntity<ParticipationResponse> participate(@PathVariable String eventId, @RequestParam EventType eventType) {
         String userId = userResolver.currentUserId(); // JWT에서만 추출
 
         log.info("[INGEST HIT] eventId={}, userId={}", eventId, userId);
 
-        ParticipationResponse res = participationService.participate(eventId, userId);
+        ParticipationResponse res = participationService.participate(eventId, userId, eventType);
         return ResponseEntity.accepted().body(res); // 항상 202
 
     }
