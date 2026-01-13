@@ -32,7 +32,7 @@ public class EventCapacityRepository {
                         .s(DdbKeyFactory.eventPk(eventId))
                         .build(),
                 "SK", AttributeValue.builder()
-                        .s("CAPACITY") // ❗ 키팩토리에 메서드는 없고 상수만 존재
+                        .s("CONFIG") // ❗ 키팩토리에 메서드는 없고 상수만 존재
                         .build()
         );
 

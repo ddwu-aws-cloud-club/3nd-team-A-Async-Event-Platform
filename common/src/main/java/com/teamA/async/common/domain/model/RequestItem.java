@@ -69,22 +69,44 @@ public class RequestItem {
 
     // Domain Attributes
     // 식별자 정보
+    @Getter(onMethod_ = {@DynamoDbAttribute("requestId")})
     private String requestId;
+
+    @Getter(onMethod_ = {@DynamoDbAttribute("eventId")})
     private String eventId;
+
+    @Getter(onMethod_ = {@DynamoDbAttribute("userId")})
     private String userId;
+
+    @Getter(onMethod_ = {@DynamoDbAttribute("eventType")})
+    private EventType eventType;
+
+    @Getter(onMethod_ = {@DynamoDbAttribute("status")})
+    private RequestStatus status;
 
     // 상태 및 결과 정보
     // Enum들은 기본적으로 name() (문자열)으로 저장됨
-    private EventType eventType;
-    private RequestStatus status;
+    @Getter(onMethod_ = {@DynamoDbAttribute("uiResult")})
     private UiResult uiResult;
+
+    @Getter(onMethod_ = {@DynamoDbAttribute("resultCode")})
     private ResultCode resultCode;
 
     // 타임스탬프
-    private Long requestedAt; // 202 응답 시점
-    private Long queuedAt;    // SQS Enqueue 시점
-    private Long startedAt;   // Worker 처리 시작
-    private Long finishedAt;  // 처리 완료
+    @Getter(onMethod_ = {@DynamoDbAttribute("requestedAt")})
+    private Long requestedAt;
+
+    // SQS Enqueue 시점
+    @Getter(onMethod_ = {@DynamoDbAttribute("queuedAt")})
+    private Long queuedAt;
+
+    // Worker 처리 시작
+    @Getter(onMethod_ = {@DynamoDbAttribute("startedAt")})
+    private Long startedAt;
+
+    // 처리 완료
+    @Getter(onMethod_ = {@DynamoDbAttribute("finishedAt")})
+    private Long finishedAt;
 
     // 실패 상세 정보
     private FailureClass failureClass;

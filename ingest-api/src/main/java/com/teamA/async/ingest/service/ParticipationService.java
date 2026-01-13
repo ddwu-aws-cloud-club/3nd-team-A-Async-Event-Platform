@@ -40,7 +40,7 @@ public class ParticipationService {
     private String queueUrl;
 
     // 시간은 우선 System.currentTimeMillis()로 가고, 나중에 common Clock으로 교체해도 됨
-    public ParticipationResponse participate(String eventId, String userId) {
+    public ParticipationResponse participate(String eventId, String userId, EventType eventType) {
         String idempotencyPk = DdbKeyFactory.idempotencyPk(eventId, userId);
         String requestId;
         boolean isDuplicate;
@@ -81,6 +81,7 @@ public class ParticipationService {
                     .userId(userId)
                     .status(RequestStatus.RECEIVED)
                     .requestedAt(now)
+                    .eventType(eventType)
                     .build();
 
             requestWriteRepository.putReceived(item);
@@ -126,7 +127,7 @@ public class ParticipationService {
 
                 // ✅ [문제 3] 중복 요청은 SQS enqueue 금지 (최초 요청일 때만 보냄)
                 ParticipationMessage msg = new ParticipationMessage(
-                        requestId, eventId, userId, queuedAt, EventType.FIRST_COME
+                        requestId, eventId, userId, queuedAt, eventType
                 );
 
                 String body = objectMapper.writeValueAsString(msg);
@@ -146,7 +147,7 @@ public class ParticipationService {
                                 .build(),
                         "eventType", MessageAttributeValue.builder()
                                 .dataType("String")
-                                .stringValue(EventType.FIRST_COME.name())
+                                .stringValue(eventType.name())
                                 .build(),
                         "queuedAt", MessageAttributeValue.builder()
                                 .dataType("String")
