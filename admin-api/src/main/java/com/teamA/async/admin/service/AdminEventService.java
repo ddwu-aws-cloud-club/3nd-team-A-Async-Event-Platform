@@ -113,4 +113,10 @@ public class AdminEventService {
     public static class ConflictException extends RuntimeException {
         public ConflictException(String message) { super(message); }
     }
+
+    public void markLotteryDrawn(String eventId) {
+        eventRepository.markLotteryDrawn(eventId, System.currentTimeMillis());
+    }
+
+
 }

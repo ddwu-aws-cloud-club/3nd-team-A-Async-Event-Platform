@@ -12,9 +12,15 @@ public class EventItem {
     private final EventStatus status;
 
     private final Long capacityTotal;   // FIRST_COME only (nullable)
+    private final Integer winners;       // LOTTERY only
+
+
     private final Long openAt;          // epoch millis (nullable)
     private final Long closeAt;         // epoch millis (nullable)
 
     private final Long createdAt;       // epoch millis
     private final Long updatedAt;       // epoch millis
+
+    private Long lotteryDrawnAt;        // LOTTERY only
+
 }
