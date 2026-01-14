@@ -1,0 +1,46 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot'
+    // dependency-management는 루트 subprojects에서 apply 중이지만,
+    // 모듈에서 명시해도 문제 없음. (중복 적용돼도 보통 안전)
+    // id 'io.spring.dependency-management'
+}
+
+group = 'com.teamA'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+dependencies {
+    implementation project(':common')
+
+    implementation 'org.springframework.boot:spring-boot-starter-web'
+    implementation 'org.springframework.boot:spring-boot-starter-validation'
+    // 운영자 API면 보통 보안 들어감 (나중에 켜도 됨)
+    // implementation 'org.springframework.boot:spring-boot-starter-security'
+
+    // actuator는 운영자/운영 지표에 유용
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    // Lombok
+    compileOnly 'org.projectlombok:lombok'
+    annotationProcessor 'org.projectlombok:lombok'
+
+    testCompileOnly 'org.projectlombok:lombok'
+    testAnnotationProcessor 'org.projectlombok:lombok'
+
+    // DynamoDB SDK v2
+    implementation 'software.amazon.awssdk:dynamodb'
+
+    implementation 'software.amazon.awssdk:dynamodb-enhanced'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
