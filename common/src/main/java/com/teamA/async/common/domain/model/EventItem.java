@@ -27,6 +27,9 @@ public class EventItem {
 
     private Integer capacityRemaining; // 현재 남은 좌석 (실시간 변동)
 
+    // LOTTERY 전용 필드
+    private Long lotteryDrawnAt; // null이면 아직 추첨 안 됨
+
     @DynamoDbPartitionKey
     @DynamoDbAttribute("PK")
     public String getPk() {

@@ -134,4 +134,41 @@ public class EventRepository {
                 .updatedAt(Long.parseLong(item.get("updatedAt").n()))
                 .build();
     }
+    //Lottery
+    public void markLotteryDrawn(String eventId, long drawnAt) {
+
+        Map<String, AttributeValue> key = Map.of(
+                "PK", AttributeValue.builder()
+                        .s(AdminDdbKeyFactory.eventPk(eventId))
+                        .build(),
+                "SK", AttributeValue.builder()
+                        .s(AdminDdbKeyFactory.metaSk())
+                        .build()
+        );
+
+        Map<String, String> names = Map.of(
+                "#lotteryDrawnAt", "lotteryDrawnAt",
+                "#updatedAt", "updatedAt"
+        );
+
+        Map<String, AttributeValue> values = Map.of(
+                ":drawnAt", AttributeValue.builder()
+                        .n(Long.toString(drawnAt))
+                        .build(),
+                ":now", AttributeValue.builder()
+                        .n(Long.toString(drawnAt))
+                        .build()
+        );
+
+        dynamoDbClient.updateItem(UpdateItemRequest.builder()
+                .tableName(tableName)
+                .key(key)
+                .updateExpression("SET #lotteryDrawnAt = :drawnAt, #updatedAt = :now")
+                .expressionAttributeNames(names)
+                .expressionAttributeValues(values)
+                .build());
+    }
+
+
+
 }
