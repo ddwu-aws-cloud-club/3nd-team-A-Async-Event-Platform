@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 
-import EventList from './pages/user/EventList'; 
+import EventList from './pages/user/EventList';
 import ParticipationHistory from './pages/user/ParticipationHistory';
 import EventDetailHub from './pages/user/EventDetailHub';
+import EventDetailAsync from './pages/user/EventDetailAsync';
 import Result from './pages/user/Result';
 import Login from './pages/user/Login';
-import Navbar from './components/Navbar'; 
+import Navbar from './components/Navbar';
 
 import AdminLayout from './pages/admin/AdminLayout';
 import AdminDashboard from './pages/admin/AdminDashboard';
@@ -23,7 +24,7 @@ function App() {
     // 기존 내역에 새 내역을 추가 (최신순으로 보이게 앞에 추가)
     setHistory((prevHistory) => [newEntry, ...prevHistory]);
   };
-  
+
   return (
     <Router>
       <div className="App">
@@ -36,6 +37,7 @@ function App() {
                 <Route path="/" element={<EventList />} />
                 <Route path="/login" element={<Login onLoginSuccess={setUserName} />} />
                 <Route path="/event/:id" element={<EventDetailHub addHistory={addHistory} />} />
+                <Route path="/event/:id" element={<EventDetailAsync addHistory={addHistory} />} />
                 <Route path="/history" element={<ParticipationHistory history={history} />} />
                 <Route path="/result/:requestId" element={<Result />} />
               </Routes>

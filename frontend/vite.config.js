@@ -10,7 +10,7 @@ export default defineConfig({
         changeOrigin: true,
       },
       "/api": {
-        target: "http://localhost:8080",
+        target: "http://alb-async-ingest-1521062058.ap-northeast-2.elb.amazonaws.com/",
         changeOrigin: true,
       },
     },
