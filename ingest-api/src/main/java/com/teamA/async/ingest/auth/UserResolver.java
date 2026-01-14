@@ -14,10 +14,10 @@ public class UserResolver {
 
     public String currentUserId() {
         // ✅ 부하테스트/토큰 없는 호출용 우선순위
-        String testUser = request.getHeader("X-Test-User");
-        if (testUser != null && !testUser.isBlank()) {
-            return testUser;
-        }
+//        String testUser = request.getHeader("X-Test-User");
+//        if (testUser != null && !testUser.isBlank()) {
+//            return testUser;
+//        }
 
         // ✅ 원래 방식: SecurityContext 기반
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();

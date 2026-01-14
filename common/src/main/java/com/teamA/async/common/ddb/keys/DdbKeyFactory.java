@@ -23,6 +23,7 @@ public final class DdbKeyFactory {
     private static final String CAPACITY_SK = "CAPACITY"; // CapacityItem SK
     private static final String QAT_PREFIX = "QAT#"; // 줄 선 시간
     private static final String ST_PREFIX = "ST#"; // 상태별 필터링
+    private static final String ACCOUNT_SK = "ACCOUNT";
 
     private DdbKeyFactory() {
         // util class
@@ -46,6 +47,9 @@ public final class DdbKeyFactory {
     // GSI PK (유저 뷰): USER#<userId>
     public static String userPk(String userId) {
         return USER_PREFIX + userId;
+    }
+    public static String accountSk() {
+        return ACCOUNT_SK;
     }
 
     // RequestItem SK: META

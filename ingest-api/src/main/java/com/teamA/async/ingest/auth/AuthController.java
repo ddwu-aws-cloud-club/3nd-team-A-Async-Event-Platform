@@ -1,41 +1,59 @@
 package com.teamA.async.ingest.auth;
 
+import com.teamA.async.common.domain.model.UserItem; // 임포트 필수!
+import com.teamA.async.ingest.ddb.UserRepository;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
-import java.util.Set;
 
 @RestController
 @RequiredArgsConstructor
 @RequestMapping("/auth")
 public class AuthController {
-
     private final JwtProvider jwtProvider;
+    private final UserRepository userRepository;
+    private final BCryptPasswordEncoder passwordEncoder;
+
+    @PostMapping("/signup")
+    public ResponseEntity<?> signup(@RequestBody LoginRequest req) {
+        if (userRepository.findByUserId(req.getUserId()) != null) {
+            return ResponseEntity.badRequest().body(Map.of("message", "Already exists"));
+        }
+        UserItem user = UserItem.builder()
+                .userId(req.getUserId())
+                .password(passwordEncoder.encode(req.getPassword()))
+                .role("ROLE_USER")
+                .createdAt(System.currentTimeMillis())
+                .build();
+        userRepository.save(user);
+        return ResponseEntity.ok(Map.of("message", "Success"));
+    }
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginRequest req) {
-        String userId = req.getUserId();
-        // ✅ G0: user-XXXX 형태면 허용 (나중에 DB/회원가입으로 교체)
-        if (userId == null || !userId.startsWith("user-")) {
-            return ResponseEntity.status(401).body(Map.of("message", "invalid user"));
+        UserItem user = userRepository.findByUserId(req.getUserId());
+
+        if (user == null || !passwordEncoder.matches(req.getPassword(), user.getPassword())) {
+            return ResponseEntity.status(401).body(Map.of("message", "Invalid credentials"));
         }
 
-        String token = jwtProvider.issue(userId);
+        String token = jwtProvider.issue(user.getUserId());
         return ResponseEntity.ok(Map.of(
                 "accessToken", token,
                 "tokenType", "Bearer"
         ));
     }
 
-
     @Data
     public static class LoginRequest {
         @NotBlank
         private String userId;
+        @NotBlank
+        private String password;
     }
 }
-

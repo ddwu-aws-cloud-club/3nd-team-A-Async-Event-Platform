@@ -76,22 +76,29 @@ public class SqsMessageConsumer {
 
     @Scheduled(fixedDelay = 3000)
     public void pollMessages() {
-        ReceiveMessageRequest req = ReceiveMessageRequest.builder()
-                .queueUrl(queueUrl)
-                .waitTimeSeconds(20)
-                .maxNumberOfMessages(5)
-                .attributeNamesWithStrings("ApproximateReceiveCount")
-                .messageAttributeNames("All")
-                .build();
 
-        List<Message> messages = sqsClient.receiveMessage(req).messages();
+        try {
+            ReceiveMessageRequest req = ReceiveMessageRequest.builder()
+                    .queueUrl(queueUrl)
+                    .waitTimeSeconds(5) // 응답을 기다리는 시간
+                    .maxNumberOfMessages(5) // 한 번에 가져올 메시지 수
+                    .attributeNamesWithStrings("ApproximateReceiveCount")
+                    .messageAttributeNames("All")
+                    .build();
 
-        for (Message m : messages) {
-            // =========================================================
-            // ★ [수정] 기존: handleMessage(m);
-            // → 처리 단계만 ThreadPool에 위임
-            // =========================================================
-            executor.submit(() -> handleMessage(m));
+            // SQS로부터 메시지 수신
+            List<Message> messages = sqsClient.receiveMessage(req).messages();
+            System.out.println(">>> Received count: " + messages.size());
+
+            for (Message m : messages) {
+                // 이제 안전하게 스레드 풀로 넘깁니다.
+                executor.submit(() -> handleMessage(m));
+            }
+
+        } catch (Exception e) {
+            // 인증 오류(Credentials), 리전 오류, 네트워크 오류 등이 여기서 출력됩니다.
+            System.err.println("!!! SQS ERROR: " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
