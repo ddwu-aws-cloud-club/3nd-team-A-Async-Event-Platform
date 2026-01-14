@@ -16,7 +16,7 @@ import software.amazon.awssdk.enhanced.dynamodb.TableSchema;
 public class UserRepository {
     private final DynamoDbEnhancedClient enhancedClient;
 
-    @Value("${aws.dynamodb.table-name}") // AsyncEventTable을 그대로 사용
+    @Value("${aws.dynamodb.table-name}")
     private String tableName;
 
     private DynamoDbTable<UserItem> getTable() {
@@ -24,7 +24,7 @@ public class UserRepository {
     }
 
     public void save(UserItem user) {
-        user.generateKeys(); // PK="USER#dyjung03", SK="ACCOUNT"
+        user.generateKeys(); // PK="USER#dyjung", SK="ACCOUNT"
         getTable().putItem(user);
     }
 

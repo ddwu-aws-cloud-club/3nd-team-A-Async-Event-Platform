@@ -19,7 +19,6 @@ public class UserResolver {
 //            return testUser;
 //        }
 
-        // ✅ 원래 방식: SecurityContext 기반
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null || auth.getPrincipal() == null) {
             // 여기서 throw 하면 “토큰 없는 테스트”가 전부 죽음

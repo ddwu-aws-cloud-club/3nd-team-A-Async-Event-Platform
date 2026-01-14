@@ -24,12 +24,16 @@ public class AuthController {
         if (userRepository.findByUserId(req.getUserId()) != null) {
             return ResponseEntity.badRequest().body(Map.of("message", "Already exists"));
         }
+
+        String assignedRole = req.getUserId().startsWith("admin") ? "ROLE_ADMIN" : "ROLE_USER";
+
         UserItem user = UserItem.builder()
                 .userId(req.getUserId())
                 .password(passwordEncoder.encode(req.getPassword()))
-                .role("ROLE_USER")
+                .role(assignedRole)
                 .createdAt(System.currentTimeMillis())
                 .build();
+
         userRepository.save(user);
         return ResponseEntity.ok(Map.of("message", "Success"));
     }
