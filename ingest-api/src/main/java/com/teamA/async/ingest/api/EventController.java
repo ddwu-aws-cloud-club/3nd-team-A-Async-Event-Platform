@@ -31,7 +31,7 @@ public class EventController {
      * GET /events
      * 모든 이벤트 목록 조회
      */
-    @GetMapping("/events")
+    @GetMapping("api/events")
     public ResponseEntity<List<EventItem>> getEvents(@RequestParam(defaultValue = "20") int limit) {
         ScanEnhancedRequest scanRequest = ScanEnhancedRequest.builder()
                 .filterExpression(Expression.builder()
@@ -57,7 +57,7 @@ public class EventController {
      * GET /events/{id}
      * 특정 이벤트 상세 조회
      */
-    @GetMapping("/events/{id}")
+    @GetMapping("api/events/{id}")
     public ResponseEntity<EventItem> getEvent(@PathVariable String id) {
         Key key = Key.builder()
                 .partitionValue(DdbKeyFactory.eventPk(id))

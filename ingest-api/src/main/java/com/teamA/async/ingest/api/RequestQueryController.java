@@ -32,7 +32,7 @@ public class RequestQueryController {
     @Value("${aws.dynamodb.table-name}")
     private String tableName;
 
-    @GetMapping("/requests/{requestId}")
+    @GetMapping("api/requests/{requestId}")
     public ResponseEntity<RequestStatusResponse> getRequestStatus(@PathVariable String requestId) {
         Key key = Key.builder()
                 .partitionValue(DdbKeyFactory.requestPk(requestId))
@@ -62,7 +62,7 @@ public class RequestQueryController {
                 .build());
     }
 
-    @GetMapping("/me/participations")
+    @GetMapping("api/me/participations")
     public ResponseEntity<List<MyParticipationItem>> getMyParticipations(
             @RequestParam(defaultValue = "20") int limit
     ) {
