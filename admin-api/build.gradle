@@ -20,11 +20,14 @@ dependencies {
 
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
-    // 운영자 API면 보통 보안 들어감 (나중에 켜도 됨)
-    // implementation 'org.springframework.boot:spring-boot-starter-security'
+    implementation 'org.springframework.boot:spring-boot-starter-security'
 
     // actuator는 운영자/운영 지표에 유용
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
+
+    implementation 'io.jsonwebtoken:jjwt-api:0.12.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.5'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.5'
 
     // Lombok
     compileOnly 'org.projectlombok:lombok'

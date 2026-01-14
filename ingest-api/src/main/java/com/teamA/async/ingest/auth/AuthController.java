@@ -46,7 +46,8 @@ public class AuthController {
             return ResponseEntity.status(401).body(Map.of("message", "Invalid credentials"));
         }
 
-        String token = jwtProvider.issue(user.getUserId());
+        String token = jwtProvider.issue(user.getUserId(), java.util.List.of(user.getRole()));
+
         return ResponseEntity.ok(Map.of(
                 "accessToken", token,
                 "tokenType", "Bearer"

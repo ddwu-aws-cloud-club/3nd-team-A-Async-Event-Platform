@@ -1,4 +1,5 @@
-package com.teamA.async.ingest.auth;
+
+package com.teamA.async.admin.auth;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -35,7 +36,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             try {
                 String userId = jwtProvider.parseUserId(token);
                 List<String> roles = jwtProvider.parseRoles(token);
-            //    System.out.println("검증 성공된 유저 ID: " + userId); // 디버깅용
+                //    System.out.println("검증 성공된 유저 ID: " + userId); // 디버깅용
 
                 List<GrantedAuthority> authorities =
                         roles.stream()
@@ -49,7 +50,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                 SecurityContextHolder.getContext().setAuthentication(authentication);
 
             } catch (Exception e) {
-            //    System.out.println("토큰 검증 에러 원인: " + e.getMessage()); //  구체적인 에러 로그
+                //    System.out.println("토큰 검증 에러 원인: " + e.getMessage()); //  구체적인 에러 로그
                 // 토큰이 이상하면 401로
                 response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
                 return;

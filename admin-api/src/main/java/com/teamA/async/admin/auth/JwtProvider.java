@@ -1,4 +1,4 @@
-package com.teamA.async.ingest.auth;
+package com.teamA.async.admin.auth;
 
 import io.jsonwebtoken.*;
 import io.jsonwebtoken.security.Keys;

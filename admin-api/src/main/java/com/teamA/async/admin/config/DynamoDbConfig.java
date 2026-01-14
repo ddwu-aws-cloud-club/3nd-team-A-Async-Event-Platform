@@ -12,6 +12,8 @@ public class DynamoDbConfig {
     public DynamoDbClient dynamoDbClient() {
         return DynamoDbClient.builder()
                 .region(Region.AP_NORTHEAST_2)
+                .credentialsProvider(software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider.create())
                 .build();
     }
+
 }
