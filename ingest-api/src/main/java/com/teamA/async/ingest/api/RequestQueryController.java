@@ -5,6 +5,7 @@ import com.teamA.async.common.domain.dto.MyParticipationItem;
 import com.teamA.async.common.domain.dto.RequestStatusResponse;
 import com.teamA.async.common.domain.enums.UiResult;
 import com.teamA.async.common.domain.model.RequestItem;
+import com.teamA.async.ingest.auth.UserResolver;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
@@ -25,7 +26,7 @@ import java.util.stream.Collectors;
 @RestController
 @RequiredArgsConstructor
 public class RequestQueryController {
-
+    private final UserResolver userResolver;
     private final DynamoDbEnhancedClient enhancedClient;
 
     @Value("${aws.dynamodb.table-name}")
@@ -63,11 +64,12 @@ public class RequestQueryController {
 
     @GetMapping("/me/participations")
     public ResponseEntity<List<MyParticipationItem>> getMyParticipations(
-            @RequestParam(defaultValue = "20") int limit,
-            @RequestParam String userId
+            @RequestParam(defaultValue = "20") int limit
     ) {
+        String currentUserId = userResolver.currentUserId();
+
         Key gsiKey = Key.builder()
-                .partitionValue(DdbKeyFactory.userPk(userId))
+                .partitionValue(DdbKeyFactory.userPk(currentUserId))
                 .build();
 
         // (선택) 안전장치 필터: queuedAt 존재 + RECEIVED 제외
