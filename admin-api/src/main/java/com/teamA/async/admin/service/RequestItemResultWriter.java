@@ -1,7 +1,6 @@
 package com.teamA.async.admin.service;
 
 import com.teamA.async.common.domain.enums.RequestStatus;
-import com.teamA.async.common.domain.enums.ResultCode;
 import com.teamA.async.common.domain.enums.UiResult;
 import com.teamA.async.common.domain.model.RequestItem;
 import lombok.RequiredArgsConstructor;
@@ -23,46 +22,44 @@ public class RequestItemResultWriter {
     @Value("${ddb.table-name}")
     private String tableName;
 
-    /**
-     * LOTTERY 당첨 처리
-     * - status: SUCCEEDED
-     * - uiResult: SUCCESS
-     * - resultCode: SUCCESS
-     */
+    private static final String RC_LOTTERY_WIN  = "LOTTERY_WIN";
+    private static final String RC_LOTTERY_LOST = "LOTTERY_LOST";
+
     public void markWinners(List<RequestItem> items) {
+        long now = System.currentTimeMillis();
         items.forEach(r ->
-                updateResult(
-                        r,
-                        RequestStatus.SUCCEEDED,
-                        UiResult.SUCCESS,
-                        ResultCode.SUCCESS
-                )
+                updateResult(r, RequestStatus.SUCCEEDED, UiResult.SUCCESS, RC_LOTTERY_WIN, now)
         );
     }
 
-    /**
-     * LOTTERY 탈락 처리
-     * - status: REJECTED
-     * - uiResult: REJECTED
-     * - resultCode: REJECTED_CAPACITY
-     */
     public void markLosers(List<RequestItem> items) {
+        long now = System.currentTimeMillis();
         items.forEach(r ->
-                updateResult(
-                        r,
-                        RequestStatus.REJECTED,
-                        UiResult.REJECTED,
-                        ResultCode.REJECTED_CAPACITY
-                )
+                updateResult(r, RequestStatus.REJECTED, UiResult.REJECTED, RC_LOTTERY_LOST, now)
         );
     }
 
     private void updateResult(RequestItem r,
                               RequestStatus status,
                               UiResult uiResult,
-                              ResultCode code) {
+                              String resultCode,
+                              long now) {
 
-        long now = System.currentTimeMillis();
+        // 🔒 1. PK / SK 필수 검증
+        if (r.getPk() == null || r.getSk() == null) {
+            throw new IllegalStateException(
+                    "RequestItem PK/SK is null. requestId=" + r.getRequestId()
+            );
+        }
+
+        // 🔒 2. enum / code null 방어
+        if (status == null || uiResult == null || resultCode == null) {
+            throw new IllegalStateException(
+                    "Invalid result fields. status=" + status +
+                            ", uiResult=" + uiResult +
+                            ", resultCode=" + resultCode
+            );
+        }
 
         dynamoDbClient.updateItem(UpdateItemRequest.builder()
                 .tableName(tableName)
@@ -82,7 +79,7 @@ public class RequestItemResultWriter {
                 .expressionAttributeValues(Map.of(
                         ":s", AttributeValue.builder().s(status.name()).build(),
                         ":ui", AttributeValue.builder().s(uiResult.name()).build(),
-                        ":c", AttributeValue.builder().s(code.name()).build(),
+                        ":c", AttributeValue.builder().s(resultCode).build(),
                         ":now", AttributeValue.builder().n(Long.toString(now)).build()
                 ))
                 .build());

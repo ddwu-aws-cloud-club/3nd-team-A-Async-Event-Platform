@@ -37,7 +37,7 @@ public class EventRepository {
             map.put("title", AttributeValue.builder().s(item.getTitle()).build());
         }
 
-        map.put("type", AttributeValue.builder().s(item.getType().name()).build());
+        map.put("eventType", AttributeValue.builder().s(item.getType().name()).build());
         map.put("status", AttributeValue.builder().s(item.getStatus().name()).build());
 
         if (item.getCapacityTotal() != null) {
@@ -53,7 +53,6 @@ public class EventRepository {
         map.put("createdAt", AttributeValue.builder().n(Long.toString(item.getCreatedAt())).build());
         map.put("updatedAt", AttributeValue.builder().n(Long.toString(item.getUpdatedAt())).build());
 
-        // 중복 생성 방지 (eventId 고유)
         dynamoDbClient.putItem(PutItemRequest.builder()
                 .tableName(tableName)
                 .item(map)
@@ -106,7 +105,6 @@ public class EventRepository {
             update.append(", #closeAt = :closeAt");
         }
 
-        // 상태 전이 강제: 현재 상태가 from일 때만 변경
         dynamoDbClient.updateItem(UpdateItemRequest.builder()
                 .tableName(tableName)
                 .key(key)
@@ -117,33 +115,11 @@ public class EventRepository {
                 .build());
     }
 
-    private EventItem fromItem(Map<String, AttributeValue> item) {
-        Long capacityTotal = item.containsKey("capacityTotal") ? Long.parseLong(item.get("capacityTotal").n()) : null;
-        Long openAt = item.containsKey("openAt") ? Long.parseLong(item.get("openAt").n()) : null;
-        Long closeAt = item.containsKey("closeAt") ? Long.parseLong(item.get("closeAt").n()) : null;
-
-        return EventItem.builder()
-                .eventId(item.get("eventId").s())
-                .title(item.containsKey("title") ? item.get("title").s() : null)
-                .type(EventType.valueOf(item.get("type").s()))
-                .status(EventStatus.valueOf(item.get("status").s()))
-                .capacityTotal(capacityTotal)
-                .openAt(openAt)
-                .closeAt(closeAt)
-                .createdAt(Long.parseLong(item.get("createdAt").n()))
-                .updatedAt(Long.parseLong(item.get("updatedAt").n()))
-                .build();
-    }
-    //Lottery
-    public void markLotteryDrawn(String eventId, long drawnAt) {
-
+    // ✅ LOTTERY draw 완료 마킹
+    public void markLotteryDrawn(String eventId, long drawnAtEpochMs) {
         Map<String, AttributeValue> key = Map.of(
-                "PK", AttributeValue.builder()
-                        .s(AdminDdbKeyFactory.eventPk(eventId))
-                        .build(),
-                "SK", AttributeValue.builder()
-                        .s(AdminDdbKeyFactory.metaSk())
-                        .build()
+                "PK", AttributeValue.builder().s(AdminDdbKeyFactory.eventPk(eventId)).build(),
+                "SK", AttributeValue.builder().s(AdminDdbKeyFactory.metaSk()).build()
         );
 
         Map<String, String> names = Map.of(
@@ -152,12 +128,8 @@ public class EventRepository {
         );
 
         Map<String, AttributeValue> values = Map.of(
-                ":drawnAt", AttributeValue.builder()
-                        .n(Long.toString(drawnAt))
-                        .build(),
-                ":now", AttributeValue.builder()
-                        .n(Long.toString(drawnAt))
-                        .build()
+                ":drawnAt", AttributeValue.builder().n(Long.toString(drawnAtEpochMs)).build(),
+                ":now", AttributeValue.builder().n(Long.toString(drawnAtEpochMs)).build()
         );
 
         dynamoDbClient.updateItem(UpdateItemRequest.builder()
@@ -169,6 +141,23 @@ public class EventRepository {
                 .build());
     }
 
+    private EventItem fromItem(Map<String, AttributeValue> item) {
+        Long capacityTotal = item.containsKey("capacityTotal") ? Long.parseLong(item.get("capacityTotal").n()) : null;
+        Long openAt = item.containsKey("openAt") ? Long.parseLong(item.get("openAt").n()) : null;
+        Long closeAt = item.containsKey("closeAt") ? Long.parseLong(item.get("closeAt").n()) : null;
+        Long lotteryDrawnAt = item.containsKey("lotteryDrawnAt") ? Long.parseLong(item.get("lotteryDrawnAt").n()) : null;
 
-
+        return EventItem.builder()
+                .eventId(item.get("eventId").s())
+                .title(item.containsKey("title") ? item.get("title").s() : null)
+                .type(EventType.valueOf(item.get("eventType").s()))
+                .status(EventStatus.valueOf(item.get("status").s()))
+                .capacityTotal(capacityTotal)
+                .openAt(openAt)
+                .closeAt(closeAt)
+                .lotteryDrawnAt(lotteryDrawnAt)   // ✅ 추가
+                .createdAt(Long.parseLong(item.get("createdAt").n()))
+                .updatedAt(Long.parseLong(item.get("updatedAt").n()))
+                .build();
+    }
 }
