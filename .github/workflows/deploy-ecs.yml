@@ -1,0 +1,188 @@
+name: Deploy to ECS (ingest/worker)
+
+on:
+  push:
+    branches: ["main"]
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      ingest: ${{ steps.filter.outputs.ingest }}
+      worker: ${{ steps.filter.outputs.worker }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect changed paths
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            ingest:
+              - 'ingest-api/**'
+              - 'common/**'
+              - 'build.gradle'
+              - 'settings.gradle'
+            worker:
+              - 'worker/**'
+              - 'common/**'
+              - 'build.gradle'
+              - 'settings.gradle'
+
+  deploy-ingest:
+    needs: changes
+    if: ${{ needs.changes.outputs.ingest == 'true' }}
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ap-northeast-2
+      CLUSTER: async-cluster
+      SERVICE: async-ingest-service-osk300iy
+      TASKDEF_FAMILY: async-ingest
+      CONTAINER_NAME: ingest
+      ECR_REPO: ingest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build JAR (Gradle)
+        run: ./gradlew clean :ingest-api:bootJar -x test
+
+      - name: Build & Push Docker image
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          docker build -t $ECR_REPO:$SHORT_SHA -f ingest-api/Dockerfile ingest-api
+          docker tag $ECR_REPO:$SHORT_SHA $ECR_REGISTRY/$ECR_REPO:$SHORT_SHA
+          docker push $ECR_REGISTRY/$ECR_REPO:$SHORT_SHA
+          echo "IMAGE_URI=$ECR_REGISTRY/$ECR_REPO:$SHORT_SHA" >> $GITHUB_ENV
+
+      - name: Render new task definition (swap image)
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+          aws ecs describe-task-definition \
+            --task-definition $TASKDEF_FAMILY \
+            --query taskDefinition > taskdef.json
+
+          cat taskdef.json | jq \
+            --arg IMG "$IMAGE_URI" \
+            --arg NAME "$CONTAINER_NAME" \
+            '.containerDefinitions |= map(if .name==$NAME then .image=$IMG else . end)
+             | del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
+            > taskdef-rendered.json
+
+      - name: Register new task definition revision
+        run: |
+          aws ecs register-task-definition --cli-input-json file://taskdef-rendered.json
+
+      - name: Update ECS service (force new deployment)
+        run: |
+          aws ecs update-service \
+            --cluster $CLUSTER \
+            --service $SERVICE \
+            --task-definition $TASKDEF_FAMILY \
+            --force-new-deployment
+
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster $CLUSTER \
+            --services $SERVICE
+
+  deploy-worker:
+    needs: changes
+    if: ${{ needs.changes.outputs.worker == 'true' }}
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ap-northeast-2
+      CLUSTER: async-cluster
+      SERVICE: async-worker-service-rvpwspft
+      TASKDEF_FAMILY: async-worker
+      CONTAINER_NAME: worker
+      ECR_REPO: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build JAR (Gradle)
+        run: ./gradlew clean :worker:bootJar -x test
+
+      - name: Build & Push Docker image
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          docker build -t $ECR_REPO:$SHORT_SHA -f worker/Dockerfile worker
+          docker tag $ECR_REPO:$SHORT_SHA $ECR_REGISTRY/$ECR_REPO:$SHORT_SHA
+          docker push $ECR_REGISTRY/$ECR_REPO:$SHORT_SHA
+          echo "IMAGE_URI=$ECR_REGISTRY/$ECR_REPO:$SHORT_SHA" >> $GITHUB_ENV
+
+      - name: Render new task definition (swap image)
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+          aws ecs describe-task-definition \
+            --task-definition $TASKDEF_FAMILY \
+            --query taskDefinition > taskdef.json
+
+          cat taskdef.json | jq \
+            --arg IMG "$IMAGE_URI" \
+            --arg NAME "$CONTAINER_NAME" \
+            '.containerDefinitions |= map(if .name==$NAME then .image=$IMG else . end)
+             | del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' \
+            > taskdef-rendered.json
+
+      - name: Register new task definition revision
+        run: |
+          aws ecs register-task-definition --cli-input-json file://taskdef-rendered.json
+
+      - name: Update ECS service (force new deployment)
+        run: |
+          aws ecs update-service \
+            --cluster $CLUSTER \
+            --service $SERVICE \
+            --task-definition $TASKDEF_FAMILY \
+            --force-new-deployment
+
+      - name: Wait for service stability
+        run: |
+          aws ecs wait services-stable \
+            --cluster $CLUSTER \
+            --services $SERVICE
