@@ -1,0 +1,18 @@
+server:
+  port: 8081
+
+aws:
+  region: ap-northeast-2
+
+ddb:
+  table-name: AsyncEventTable
+
+sqs:
+  queue-url: ${SQS_QUEUE_URL:https://sqs.ap-northeast-2.amazonaws.com/590807098068/AsyncEventMainQueue}
+
+analytics:
+  event:
+    source: kr.ac.dongduk.worker
+    detail-type: ParticipationProcessed
+
+
