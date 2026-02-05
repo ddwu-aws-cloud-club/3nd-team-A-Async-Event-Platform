@@ -9,6 +9,9 @@ import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
+import com.teamA.async.common.domain.enums.EventType;
+
+
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -30,7 +33,73 @@ public class RequestStateRepository {
      * - Condition: status = QUEUED
      * - Update: status = PROCESSING, startedAt = startedAtMillis
      */
+
+    public void createReceived(
+            String requestId,
+            String eventId,
+            String userId,
+            EventType eventType,
+            long requestedAt
+    ) {
+        long ttlEpochSeconds =
+                (System.currentTimeMillis() / 1000) + (60L * 60 * 24 * 30); // 30일
+
+        Map<String, AttributeValue> item = Map.of(
+                ATTR_PK, AttributeValue.fromS(DdbKeyFactory.requestPk(requestId)),
+                ATTR_SK, AttributeValue.fromS(DdbKeyFactory.metaSk()),
+                "requestId", AttributeValue.fromS(requestId),
+                "eventId", AttributeValue.fromS(eventId),
+                "userId", AttributeValue.fromS(userId),
+                "status", AttributeValue.fromS("RECEIVED"),
+                "requestedAt", AttributeValue.fromN(Long.toString(requestedAt)),
+                "eventType", AttributeValue.fromS(eventType.name()),
+
+                "ttl", AttributeValue.fromN(Long.toString(ttlEpochSeconds))
+        );
+
+        PutItemRequest req = PutItemRequest.builder()
+                .tableName(tableName)
+                .item(item)
+                .conditionExpression("attribute_not_exists(PK)")
+                .build();
+
+        try {
+            dynamoDbClient.putItem(req);
+        } catch (ConditionalCheckFailedException e) {
+            // 이미 있으면 그냥 통과 (중복 생성 방지)
+        }
+
+    }
+
+    public void markQueued(String requestId, long queuedAtMillis) {
+
+        Map<String, AttributeValue> key = Map.of(
+                ATTR_PK, AttributeValue.fromS(DdbKeyFactory.requestPk(requestId)),
+                ATTR_SK, AttributeValue.fromS(DdbKeyFactory.metaSk())
+        );
+
+        UpdateItemRequest req = UpdateItemRequest.builder()
+                .tableName(tableName)
+                .key(key)
+                .conditionExpression("#status = :received")
+                .updateExpression("SET #status = :queued, queuedAt = :t")
+                .expressionAttributeNames(Map.of("#status", "status"))
+                .expressionAttributeValues(Map.of(
+                        ":received", AttributeValue.fromS("RECEIVED"),
+                        ":queued", AttributeValue.fromS("QUEUED"),
+                        ":t", AttributeValue.fromN(Long.toString(queuedAtMillis))
+                ))
+                .build();
+
+        try {
+            dynamoDbClient.updateItem(req);
+        } catch (ConditionalCheckFailedException e) {
+            // 이미 상태 바뀐 경우 → 무시
+        }
+    }
+
     public boolean tryAcquireProcessing(String requestId, long startedAtMillis) {
+
         Map<String, AttributeValue> key = Map.of(
                 ATTR_PK, AttributeValue.builder().s(DdbKeyFactory.requestPk(requestId)).build(),
                 ATTR_SK, AttributeValue.builder().s(DdbKeyFactory.metaSk()).build()
@@ -39,7 +108,7 @@ public class RequestStateRepository {
         UpdateItemRequest req = UpdateItemRequest.builder()
                 .tableName(tableName)
                 .key(key)
-                .conditionExpression("#status = :queued")
+                .conditionExpression("#status = :queued")   // QUEUED → PROCESSING
                 .updateExpression("SET #status = :processing, #startedAt = :startedAt")
                 .expressionAttributeNames(Map.of(
                         "#status", "status",
@@ -59,6 +128,7 @@ public class RequestStateRepository {
             return false;
         }
     }
+
 
     /**
      * PROCESSING -> SUCCEEDED
@@ -115,6 +185,7 @@ public class RequestStateRepository {
                 errorMessage
         );
     }
+
 
     /**
      * 최종 상태 공통 업데이트
@@ -195,30 +266,43 @@ public class RequestStateRepository {
      * 상태 조회 (선점 실패 시 로깅/분기용)
      */
     public Optional<String> getCurrentStatus(String requestId) {
-        Map<String, AttributeValue> key = Map.of(
-                ATTR_PK, AttributeValue.builder().s(DdbKeyFactory.requestPk(requestId)).build(),
-                ATTR_SK, AttributeValue.builder().s(DdbKeyFactory.metaSk()).build()
-        );
 
-        GetItemRequest request = GetItemRequest.builder()
-                .tableName(tableName)
-                .key(key)
-                .projectionExpression("#status")
-                .expressionAttributeNames(Map.of("#status", "status"))
-                .consistentRead(true)
-                .build();
+        try {
 
-        Map<String, AttributeValue> item = dynamoDbClient.getItem(request).item();
+            Map<String, AttributeValue> key = Map.of(
+                    ATTR_PK, AttributeValue.builder().s(DdbKeyFactory.requestPk(requestId)).build(),
+                    ATTR_SK, AttributeValue.builder().s(DdbKeyFactory.metaSk()).build()
+            );
 
-        if (item == null || !item.containsKey("status")) {
+            GetItemRequest request = GetItemRequest.builder()
+                    .tableName(tableName)
+                    .key(key)
+                    .projectionExpression("#status")
+                    .expressionAttributeNames(Map.of("#status", "status"))
+                    .consistentRead(true)
+                    .build();
+
+            Map<String, AttributeValue> item =
+                    dynamoDbClient.getItem(request).item();
+
+            if (item == null || !item.containsKey("status")) {
+                return Optional.empty();
+            }
+
+            return Optional.ofNullable(item.get("status"))
+                    .map(AttributeValue::s);
+
+        } catch (Exception e) {
+            // 상태 조회 실패 → 안전하게 empty 처리
             return Optional.empty();
         }
-        return Optional.ofNullable(item.get("status")).map(AttributeValue::s);
     }
+
 
     private static String truncate(String s, int maxLen) {
         if (s == null) return null;
         if (s.length() <= maxLen) return s;
         return s.substring(0, maxLen);
     }
+
 }
