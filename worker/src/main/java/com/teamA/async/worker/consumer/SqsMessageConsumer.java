@@ -11,13 +11,18 @@ import com.teamA.async.worker.analytics.publisher.ParticipationEventBridgePublis
 import com.teamA.async.worker.ddb.EventCapacityRepository;
 import com.teamA.async.worker.ddb.RequestStateRepository;
 import com.teamA.async.worker.ddb.WorkerIdempotencyRepository;
+import com.teamA.async.worker.dlq.DlqSender;
+import com.teamA.async.worker.exception.BusinessRuleViolationException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
+import io.micrometer.core.instrument.Counter; //dlq 전략수정
+import io.micrometer.core.instrument.MeterRegistry; //dlq 전략수정
 
 import org.springframework.stereotype.Component;
 import jakarta.annotation.PreDestroy;
+import jakarta.annotation.PostConstruct; //dlq 전략수정
 import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.*;
@@ -27,6 +32,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+//dlq전략수정 : 네트워크 timeout/일시 장애 Retryable 명시용 import (JDK 표준이라 컴파일 안전)
+import java.io.IOException;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
+import java.util.concurrent.TimeoutException;
 
 @Slf4j
 @Component
@@ -42,6 +54,13 @@ public class SqsMessageConsumer {
 
     @Value("${sqs.queue-url}")
     private String queueUrl;
+
+    //dlq 전략수정
+    private final DlqSender dlqSender;
+    private final MeterRegistry meterRegistry;
+    private Counter duplicateSkipCounter;
+    private Counter nonRetryableDlqCounter;
+    private Counter retryableExceptionCounter; //dlq 전략수정
 
     // 나중에 yml + @Value로 바꾸기
     private static final int SCHEMA_VERSION = 1;
@@ -77,6 +96,23 @@ public class SqsMessageConsumer {
     // =========================================================
     private final ExecutorService executor =
             Executors.newFixedThreadPool(4);
+
+    @PostConstruct //dlq 전략 수정
+    public void initMetrics() {
+        this.duplicateSkipCounter = Counter.builder("duplicate_skip_count")
+                .description("Duplicate requests skipped by idempotency lock")
+                .register(meterRegistry);
+
+        // 기본 카운터(전체 합)도 하나 두면 운영이 편함
+        this.nonRetryableDlqCounter = Counter.builder("non_retryable_dlq_count")
+                .description("Non-retryable messages sent to DLQ")
+                .register(meterRegistry);
+
+        this.retryableExceptionCounter = Counter.builder("retryable_exception_count") //dlq 전략수정
+                .description("Retryable exceptions while processing messages") //dlq 전략수정
+                .register(meterRegistry); //dlq 전략수정
+    }
+
 
     @Scheduled(fixedDelay = 3000)
     public void pollMessages() {
@@ -127,6 +163,26 @@ public class SqsMessageConsumer {
             } catch (Exception attrEx) {
                 log.warn("[NON-RETRYABLE] invalid body and cannot recover attrs. attempt={} body={}",
                         attempt, safeBody(message), bodyEx);
+
+                String nonRetryableReasonCode = "INVALID_SCHEMA"; //dlq전략수정 : undefined symbol 해결 + reasonCode 고정
+
+                if (nonRetryableDlqCounter != null) nonRetryableDlqCounter.increment();
+                meterRegistry.counter("non_retryable_dlq_count", "reasonCode", nonRetryableReasonCode)
+                        .increment();
+
+                log.error("[DLQ SEND] reasonCode={} requestId=? eventId=? userId=? attempt={} messageId={}",
+                        nonRetryableReasonCode, attempt, message.messageId());
+
+                // dlq전략수정 : 즉시 DLQ + ACK
+                dlqSender.send(
+                        safeBody(message),
+                        message.messageId(),
+                        attempt,
+                        "NON_RETRYABLE",
+                        nonRetryableReasonCode,
+                        Map.of()
+                );
+
                 deleteMessage(message);
                 return;
             }
@@ -141,6 +197,7 @@ public class SqsMessageConsumer {
 
         if (!first) {
             log.info("[DUPLICATE] skip requestId={}", payload.requestId());
+            if (duplicateSkipCounter != null) duplicateSkipCounter.increment(); //dlq 전략수정
             deleteMessage(message);
             return;
         }
@@ -208,6 +265,29 @@ public class SqsMessageConsumer {
                     log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (STALE_RECEIVED)",
                             payload.requestId(), updated, attempt);
 
+                    String nonRetryableReasonCode = "STALE_RECEIVED"; //dlq 전략수정 : undefined symbol 해결
+
+                    if (nonRetryableDlqCounter != null) nonRetryableDlqCounter.increment();
+                    meterRegistry.counter("non_retryable_dlq_count", "reasonCode", nonRetryableReasonCode)
+                            .increment();
+
+                    log.error("[DLQ SEND] reasonCode={} requestId={} eventId={} userId={} attempt={} messageId={}",
+                            nonRetryableReasonCode, payload.requestId(), payload.eventId(), payload.userId(), attempt, message.messageId());
+
+                    // dlq전략수정 : NonRetryable은 즉시 DLQ 전송 + ACK (send 실패 시 delete까지 가지 않아서 재시도됨)
+                    dlqSender.send(
+                            message.body(),
+                            message.messageId(),
+                            attempt,
+                            "NON_RETRYABLE",
+                            nonRetryableReasonCode,
+                            Map.of(
+                                    "requestId", payload.requestId(),
+                                    "eventId", payload.eventId(),
+                                    "userId", payload.userId()
+                            )
+                    );
+
                     deleteMessage(message);
                     return;
                 case "QUEUED":
@@ -223,6 +303,52 @@ public class SqsMessageConsumer {
                     ));
                     deleteMessage(message);
                     return;
+                case "PROCESSING":
+                    // 다른 워커가 처리 중이거나, 이전 시도에서 visibility timeout으로 재수신된 케이스
+                    // ✅ 바로 ACK하면 유실/오판 위험. 잠깐 defer로 밀어줌.
+                    if (attempt <= MAX_RETRYABLE_RETRY) {
+                        log.info("[DEFER] requestId={} status=PROCESSING attempt={} (in-flight -> retry later)",
+                                payload.requestId(), attempt);
+                        deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                        return;
+                    }
+
+                    // ✅ 너무 오래 PROCESSING이면 "의미 있는 실패"로 보고 즉시 DLQ + ACK (선택적으로)
+                    long finishedAt2 = System.currentTimeMillis();
+                    requestStateRepository.markFailedFinal(
+                            payload.requestId(),
+                            finishedAt2,
+                            ResultCode.FAILED_WORKER_EXCEPTION,
+                            FailureClass.NON_RETRYABLE,
+                            "STALE_PROCESSING",
+                            "Request stuck in PROCESSING state"
+                    );
+
+                    String nonRetryableReasonCode2 = "STALE_PROCESSING"; //dlq 전략수정 : undefined symbol 해결
+
+                    if (nonRetryableDlqCounter != null) nonRetryableDlqCounter.increment();
+                    meterRegistry.counter("non_retryable_dlq_count", "reasonCode", nonRetryableReasonCode2)
+                            .increment();
+
+                    log.error("[DLQ SEND] reasonCode={} requestId={} eventId={} userId={} attempt={} messageId={}",
+                            nonRetryableReasonCode2, payload.requestId(), payload.eventId(), payload.userId(), attempt, message.messageId());
+
+                    // dlq전략수정 : NonRetryable은 즉시 DLQ 전송 + ACK
+                    dlqSender.send(
+                            message.body(),
+                            message.messageId(),
+                            attempt,
+                            "NON_RETRYABLE",
+                            nonRetryableReasonCode2,
+                            Map.of(
+                                    "requestId", payload.requestId(),
+                                    "eventId", payload.eventId(),
+                                    "userId", payload.userId()
+                            )
+                    );
+                    deleteMessage(message);
+                    return;
+
                 default:
                     log.info("[SKIP] requestId={} status={} attempt={} (dup -> ack)", payload.requestId(), status, attempt);
                     finishedAt = System.currentTimeMillis();
@@ -280,13 +406,21 @@ public class SqsMessageConsumer {
             FailureClass cls = classifyFailure(e);
 
             if (cls == FailureClass.NON_RETRYABLE) {
+
+                //dlq전략수정 : 비즈니스 규칙 위반은 reasonCode를 그대로 DLQ/상태에 박아 운영 분류를 1분 내로 만든다
+                String nonRetryableReasonCode = "WORKER_NON_RETRYABLE";
+                if (e instanceof BusinessRuleViolationException) {
+                    BusinessRuleViolationException brve = (BusinessRuleViolationException) e;
+                    nonRetryableReasonCode = brve.getReasonCode();
+                }
+
                 long finishedAt = System.currentTimeMillis();
                 requestStateRepository.markFailedFinal(
                         payload.requestId(),
                         finishedAt,
-                        ResultCode.FAILED_INGEST_ENQUEUE,
+                        ResultCode.FAILED_WORKER_EXCEPTION, // dlq 전략수정 : Worker에서 난 예외는 WORKER_EXCEPTION이 더 정확
                         FailureClass.NON_RETRYABLE,
-                        "WORKER_NON_RETRYABLE",
+                        nonRetryableReasonCode,
                         e.getMessage()
                 );
 
@@ -294,46 +428,70 @@ public class SqsMessageConsumer {
                         payload, attempt, IS_DLQ,
                         startedAt, finishedAt,
                         RequestStatus.FAILED_FINAL,
-                        ResultCode.FAILED_INGEST_ENQUEUE,
-                        new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "WORKER_NON_RETRYABLE", e.getMessage()),
+                        ResultCode.FAILED_WORKER_EXCEPTION, // dlq 전략수정
+                        new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, nonRetryableReasonCode, e.getMessage()),
                         false
                 ));
+
+                if (nonRetryableDlqCounter != null) nonRetryableDlqCounter.increment();
+                meterRegistry.counter("non_retryable_dlq_count", "reasonCode", nonRetryableReasonCode)
+                        .increment();
+
+                log.error("[DLQ SEND] reasonCode={} requestId={} eventId={} userId={} attempt={} messageId={}",
+                        nonRetryableReasonCode, payload.requestId(), payload.eventId(), payload.userId(), attempt, message.messageId());
+
+                // dlq전략수정 : NonRetryable은 즉시 DLQ 전송 + ACK (send 실패 시 delete까지 가지 않아서 재시도됨)
+                dlqSender.send(
+                        message.body(),
+                        message.messageId(),
+                        attempt,
+                        "NON_RETRYABLE",
+                        nonRetryableReasonCode,
+                        Map.of(
+                                "requestId", payload.requestId(),
+                                "eventId", payload.eventId(),
+                                "userId", payload.userId()
+                        ),
+                        e // dlq전략수정: 예외 전달( digest 채우기 )
+                );
 
                 deleteMessage(message);
                 return;
             }
 
+            if (retryableExceptionCounter != null) retryableExceptionCounter.increment(); //dlq 전략수정
+
+            log.warn("[RETRYABLE] ex={} attempt={} requestId={} eventId={} userId={} messageId={}",
+                    e.getClass().getSimpleName(), attempt, payload.requestId(), payload.eventId(), payload.userId(), message.messageId(), e);
+
+            // dlq전략수정 : Retryable은 "throw/재시도"가 목표.
+            // - 폴링 방식이므로 deleteMessage만 안 하면 SQS가 재전달함
+            // - 하지만 현재 상태가 PROCESSING에 머물면 다음 시도에서 재처리가 막히므로 QUEUED로 롤백이 필요
+            boolean rolledBack = false;
+            try {
+                // dlq전략수정 : PROCESSING -> QUEUED 롤백 (RequestStateRepository에 메서드 추가 필요: releaseProcessingToQueued)
+                rolledBack = requestStateRepository.releaseProcessingToQueued(payload.requestId(), startedAt); //dlq 전략수정
+            } catch (Exception rollbackEx) {
+                // 롤백 실패는 더 큰 문제(상태 오염 가능). 그래도 ACK는 하지 않는다.
+                log.warn("[ROLLBACK FAIL] requestId={} attempt={} (processing->queued)", payload.requestId(), attempt, rollbackEx);
+            }
+
             // [수정] RETRYABLE 무한 재등장 방지
             if (attempt <= MAX_RETRYABLE_RETRY) {
                 int backoff = computeRetryableBackoffSeconds(attempt);
-                log.error("[RETRYABLE/DEFER] requestId={} attempt={} backoff={}s", payload.requestId(), attempt, backoff, e);
+                log.warn("[RETRYABLE/DEFER] requestId={} attempt={} backoff={}s rollbackToQueued={}", //dlq전략수정 (warn로 낮춤)
+                        payload.requestId(), attempt, backoff, rolledBack, e);
                 deferMessage(message, backoff);
-                return;
+                return; // ✅ ACK 금지 (deleteMessage 호출하면 안 됨)
             }
 
-            long finishedAt = System.currentTimeMillis();
-            boolean updated = requestStateRepository.markFailedFinal(
-                    payload.requestId(),
-                    finishedAt,
-                    ResultCode.FAILED_INGEST_ENQUEUE,
-                    FailureClass.RETRYABLE,
-                    "RETRYABLE_EXHAUSTED",
-                    "Exceeded retryable retry limit: " + e.getClass().getSimpleName()
-            );
-
-            publisher.publish(buildEvent(
-                    payload, attempt, IS_DLQ,
-                    startedAt, finishedAt,
-                    RequestStatus.FAILED_FINAL,
-                    ResultCode.FAILED_INGEST_ENQUEUE,
-                    new ParticipationProcessedFailure(FailureClass.RETRYABLE, "RETRYABLE_EXHAUSTED", e.getMessage()),
-                    false
-            ));
-
-            log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (RETRYABLE_EXHAUSTED)",
-                    payload.requestId(), updated, attempt);
-
-            deleteMessage(message);
+            // dlq전략수정 : 내부에서 RETRYABLE_EXHAUSTED로 FAILED_FINAL 찍고 ACK하면 SQS redrive가 죽음.
+            // - attempt가 커져도 계속 "재시도"로 두고, 최종 DLQ 이동은 SQS redrive(maxReceiveCount)에 맡긴다.
+            int backoff = computeRetryableBackoffSeconds(attempt); // 이미 max 60초로 캡됨
+            log.warn("[RETRYABLE] requestId={} attempt={} backoff={}s rollbackToQueued={} (no-ack; rely on redrive)", //dlq전략수정 (warn로 낮춤)
+                    payload.requestId(), attempt, backoff, rolledBack, e);
+            deferMessage(message, backoff);
+            return; // ✅ ACK 금지 (deleteMessage 호출하면 안 됨)
         }
     }
 
@@ -385,18 +543,57 @@ public class SqsMessageConsumer {
     }
 
     private FailureClass classifyFailure(Exception e) {
-        if (e instanceof IllegalArgumentException) return FailureClass.NON_RETRYABLE;
 
+        // 1) 명백한 NonRetryable: 입력/스키마/파싱/비즈니스 규칙
+        if (e instanceof IllegalArgumentException) return FailureClass.NON_RETRYABLE; // 필수값 누락 등
+        if (e instanceof BusinessRuleViolationException) return FailureClass.NON_RETRYABLE; //dlq 전략수정 : 비즈니스 규칙 위반은 즉시 DLQ
+
+        //dlq 전략수정 : 네트워크/타임아웃은 Retryable로 “명시”
+        if (e instanceof SocketTimeoutException) return FailureClass.RETRYABLE;
+        if (e instanceof TimeoutException) return FailureClass.RETRYABLE;
+        if (e instanceof ConnectException) return FailureClass.RETRYABLE;
+        if (e instanceof UnknownHostException) return FailureClass.RETRYABLE;
+        if (e instanceof IOException) return FailureClass.RETRYABLE;
+
+        //dlq 전략수정 : AWS SDK(core) 예외는 의존성/버전에 따라 클래스가 없을 수 있으므로 이름으로 안전 판별
+        String cn = e.getClass().getName();
+        if (cn.endsWith("SdkClientException") || cn.contains(".core.exception.SdkClientException")) {
+            return FailureClass.RETRYABLE;
+        }
+
+        // 2) DynamoDB: throttling/일시 장애는 Retryable로 명확히 분기
+        // - DynamoDbException은 statusCode만으로 판단하면 Throttling(429 등)이 NonRetryable로 오판될 수 있음
+        // - SDK 버전에 따라 ThrottlingException/ServiceUnavailableException 클래스가 없을 수 있으므로 errorCode/statusCode로 처리한다.
+        if (e instanceof software.amazon.awssdk.services.dynamodb.model.ProvisionedThroughputExceededException)
+            return FailureClass.RETRYABLE;
+
+        // 4) SQS / DynamoDB 공통: 5xx는 Retryable, 4xx는 NonRetryable (단 throttling은 위에서 이미 처리)
         if (e instanceof SqsException se) {
             int sc = se.statusCode();
-            if (sc >= 400 && sc < 500) return FailureClass.NON_RETRYABLE;
+            if (sc >= 500) return FailureClass.RETRYABLE;
+            if (sc >= 400) return FailureClass.NON_RETRYABLE;
         }
 
         if (e instanceof DynamoDbException de) {
             int sc = de.statusCode();
-            if (sc >= 400 && sc < 500) return FailureClass.NON_RETRYABLE;
+
+            //dlq 전략수정 : throttling/limit 계열은 4xx여도 Retryable로 우선 처리
+            String code = de.awsErrorDetails() != null ? de.awsErrorDetails().errorCode() : null;
+            if (sc == 429) return FailureClass.RETRYABLE;
+            if (code != null) {
+                if ("ThrottlingException".equals(code) ||
+                        "Throttling".equals(code) ||
+                        "RequestLimitExceeded".equals(code) ||
+                        "ProvisionedThroughputExceededException".equals(code)) {
+                    return FailureClass.RETRYABLE;
+                }
+            }
+
+            if (sc >= 500) return FailureClass.RETRYABLE;
+            if (sc >= 400) return FailureClass.NON_RETRYABLE;
         }
 
+        // 5) 그 외는 기본 Retryable(일시 장애 가정)로 두는 게 안전
         return FailureClass.RETRYABLE;
     }
 

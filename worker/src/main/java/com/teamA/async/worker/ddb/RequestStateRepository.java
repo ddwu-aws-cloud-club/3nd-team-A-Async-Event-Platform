@@ -305,4 +305,70 @@ public class RequestStateRepository {
         return s.substring(0, maxLen);
     }
 
+    public boolean releaseProcessingToQueued(String requestId) {
+
+        Map<String, AttributeValue> key = Map.of(
+                ATTR_PK, AttributeValue.fromS(DdbKeyFactory.requestPk(requestId)),
+                ATTR_SK, AttributeValue.fromS(DdbKeyFactory.metaSk())
+        );
+
+        UpdateItemRequest req = UpdateItemRequest.builder()
+                .tableName(tableName)
+                .key(key)
+                .conditionExpression("#status = :processing")
+                .updateExpression("SET #status = :queued")
+                .expressionAttributeNames(Map.of("#status", "status"))
+                .expressionAttributeValues(Map.of(
+                        ":processing", AttributeValue.fromS("PROCESSING"),
+                        ":queued", AttributeValue.fromS("QUEUED")
+                ))
+                .build();
+
+        try {
+            dynamoDbClient.updateItem(req);
+            return true;
+        } catch (ConditionalCheckFailedException e) {
+            return false;
+        }
+    }
+
+    // dlq전략수정 : "내가 선점했던 PROCESSING만" 안전하게 QUEUED로 롤백하기 위한 오버로드(권장)
+    // - startedAt(내가 기록했던 startedAt)까지 조건에 포함시켜 경합 시 다른 워커의 PROCESSING을 롤백하는 위험을 줄인다.
+    // - lastRetryAt을 같이 기록해 운영 시 추적성을 높인다.
+    public boolean releaseProcessingToQueued(String requestId, long startedAtMillis) { //dlq전략수정
+
+        Map<String, AttributeValue> key = Map.of(
+                ATTR_PK, AttributeValue.fromS(DdbKeyFactory.requestPk(requestId)),
+                ATTR_SK, AttributeValue.fromS(DdbKeyFactory.metaSk())
+        );
+
+        long now = System.currentTimeMillis(); //dlq전략수정
+
+        UpdateItemRequest req = UpdateItemRequest.builder()
+                .tableName(tableName)
+                .key(key)
+                // status=PROCESSING 이면서 startedAt이 내가 선점한 startedAt과 동일할 때만 롤백 //dlq전략수정
+                .conditionExpression("#status = :processing AND #startedAt = :startedAt") //dlq전략수정
+                .updateExpression("SET #status = :queued, lastRetryAt = :now") //dlq전략수정
+                .expressionAttributeNames(Map.of(
+                        "#status", "status",
+                        "#startedAt", "startedAt"
+                ))
+                .expressionAttributeValues(Map.of(
+                        ":processing", AttributeValue.fromS("PROCESSING"),
+                        ":queued", AttributeValue.fromS("QUEUED"),
+                        ":startedAt", AttributeValue.fromN(Long.toString(startedAtMillis)), //dlq전략수정
+                        ":now", AttributeValue.fromN(Long.toString(now)) //dlq전략수정
+                ))
+                .build();
+
+        try {
+            dynamoDbClient.updateItem(req);
+            return true;
+        } catch (ConditionalCheckFailedException e) {
+            return false;
+        }
+    }
+
+
 }
