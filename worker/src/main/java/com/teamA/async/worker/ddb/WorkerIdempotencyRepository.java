@@ -30,7 +30,9 @@ public class WorkerIdempotencyRepository {
         PutItemRequest req = PutItemRequest.builder()
                 .tableName(tableName)
                 .item(item)
-                .conditionExpression("attribute_not_exists(PK)")
+                .conditionExpression("attribute_not_exists(PK) OR #requestId = :rid") //dlq 전략수정
+                .expressionAttributeNames(Map.of("#requestId", "requestId"))
+                .expressionAttributeValues(Map.of(":rid", AttributeValue.fromS(requestId)))
                 .build();
 
         try {

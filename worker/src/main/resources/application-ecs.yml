@@ -9,6 +9,8 @@ ddb:
 
 sqs:
   queue-url: ${SQS_QUEUE_URL}
+  dlq-url: ${DLQ_QUEUE_URL}
+
 
 analytics:
   event:
