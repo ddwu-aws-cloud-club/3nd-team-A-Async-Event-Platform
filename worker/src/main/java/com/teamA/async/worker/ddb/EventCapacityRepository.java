@@ -4,6 +4,7 @@ import com.teamA.async.common.ddb.keys.DdbKeyFactory;
 import com.teamA.async.worker.exception.BusinessRuleViolationException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -21,7 +22,12 @@ public class EventCapacityRepository {
 
     private final DynamoDbClient dynamoDbClient;
 
-    private static final String TABLE_NAME = "AsyncEventTable";
+    @Value("${ddb.tables.event-capacity}")
+    private String tableName;
+
+
+    // ✅ (2번) SK "CONFIG" 매직 스트링 제거: 한 곳에서만 관리
+    private static final String EVENT_CONFIG_SK = "CONFIG";
 
     /**
      * capacityRemaining > 0 인 경우에만 1 감소
@@ -30,16 +36,15 @@ public class EventCapacityRepository {
 
         // 🔒 키팩토리 단일 진실 사용
         Map<String, AttributeValue> key = Map.of(
-                "PK", AttributeValue.builder()
-                        .s(DdbKeyFactory.eventPk(eventId))
-                        .build(),
-                "SK", AttributeValue.builder()
-                        .s("CONFIG") // ❗ 키팩토리에 메서드는 없고 상수만 존재
+                "eventId", AttributeValue.builder()
+                        // ✅ event-capacity 테이블은 PK-only(eventId) 구조이므로 "eventId"만 사용한다
+                        // ⚠️ DdbKeyFactory.eventPk(...)는 PK/SK 기반 설계에서 쓰는 값일 수 있어 일단 eventId 그대로 사용
+                        .s(eventId)
                         .build()
         );
 
         UpdateItemRequest request = UpdateItemRequest.builder()
-                .tableName(TABLE_NAME)
+                .tableName(tableName)
                 .key(key)
                 .conditionExpression("capacityRemaining > :zero")
                 .updateExpression(
@@ -81,9 +86,9 @@ public class EventCapacityRepository {
     private boolean existsEventConfigItem(String eventId, Map<String, AttributeValue> key) {
         try {
             GetItemRequest getReq = GetItemRequest.builder()
-                    .tableName(TABLE_NAME)
+                    .tableName(tableName)
                     .key(key)
-                    .projectionExpression("PK")
+                    .projectionExpression("eventId")
                     .consistentRead(true)
                     .build();
 

@@ -168,7 +168,7 @@ public class DlqSender {
                 dlqSendFailureCounter().increment();
                 meterRegistry.counter("dlq_send_failure_count", "reasonCode",
                                 (reasonCode == null || reasonCode.isBlank()) ? "UNKNOWN" : reasonCode)
-                        .increment(); 
+                        .increment();
             } catch (Exception ignore) {
                 // 메트릭 실패가 본 실패를 가리면 안 됨
             }

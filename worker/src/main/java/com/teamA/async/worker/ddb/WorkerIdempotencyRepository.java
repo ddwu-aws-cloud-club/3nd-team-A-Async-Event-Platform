@@ -14,23 +14,23 @@ public class WorkerIdempotencyRepository {
 
     private final DynamoDbClient dynamoDbClient;
 
-    @Value("${ddb.table-name}")
+    @Value("${ddb.tables.worker-idempotency}")
     private String tableName;
+
 
     public boolean tryLock(String eventId, String userId, String requestId) {
 
         String pk = "IDEMP#" + eventId + "#" + userId;
 
         Map<String, AttributeValue> item = Map.of(
-                "PK", AttributeValue.fromS(pk),
-                "SK", AttributeValue.fromS("LOCK"),
+                "idempotencyKey", AttributeValue.fromS(pk),     // ✅ PK-only 테이블 키
                 "requestId", AttributeValue.fromS(requestId)
         );
 
         PutItemRequest req = PutItemRequest.builder()
                 .tableName(tableName)
                 .item(item)
-                .conditionExpression("attribute_not_exists(PK) OR #requestId = :rid") //dlq 전략수정
+                .conditionExpression("attribute_not_exists(idempotencyKey) OR #requestId = :rid") //dlq 전략수정
                 .expressionAttributeNames(Map.of("#requestId", "requestId"))
                 .expressionAttributeValues(Map.of(":rid", AttributeValue.fromS(requestId)))
                 .build();

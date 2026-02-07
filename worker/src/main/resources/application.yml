@@ -5,11 +5,15 @@ aws:
   region: ap-northeast-2
 
 ddb:
-  table-name: AsyncEventTable
+  tables:
+    event-capacity: event-capacity
+    request-state: request-state
+    worker-idempotency: worker-idempotency
+
 
 sqs:
-  queue-url: ${SQS_QUEUE_URL:https://sqs.ap-northeast-2.amazonaws.com/590807098068/AsyncEventMainQueue}
-  dlq-url: ${DLQ_QUEUE_URL:https://sqs.ap-northeast-2.amazonaws.com/590807098068/AsyncEventDLQ}
+  queue-url: ${SQS_QUEUE_URL:https://sqs.ap-northeast-2.amazonaws.com/031988646316/async-main-queue}
+  dlq-url: ${DLQ_QUEUE_URL:https://sqs.ap-northeast-2.amazonaws.com/031988646316/async-main-dlq}
 
 analytics:
   event:
