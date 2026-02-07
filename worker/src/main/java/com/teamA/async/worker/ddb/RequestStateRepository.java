@@ -1,6 +1,5 @@
 package com.teamA.async.worker.ddb;
 
-import com.teamA.async.common.ddb.keys.DdbKeyFactory;
 import com.teamA.async.common.domain.enums.FailureClass;
 import com.teamA.async.common.domain.enums.ResultCode;
 import lombok.RequiredArgsConstructor;
@@ -10,7 +9,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
 import com.teamA.async.common.domain.enums.EventType;
-
 
 import java.util.HashMap;
 import java.util.Map;
@@ -22,11 +20,10 @@ public class RequestStateRepository {
 
     private final DynamoDbClient dynamoDbClient;
 
-    @Value("${ddb.table-name}")
+    @Value("${ddb.tables.request-state}")
     private String tableName;
 
-    private static final String ATTR_PK = "PK";
-    private static final String ATTR_SK = "SK";
+    private static final String ATTR_REQUEST_ID = "requestId";
 
     /**
      * QUEUED -> PROCESSING 선점
@@ -45,22 +42,19 @@ public class RequestStateRepository {
                 (System.currentTimeMillis() / 1000) + (60L * 60 * 24 * 30); // 30일
 
         Map<String, AttributeValue> item = Map.of(
-                ATTR_PK, AttributeValue.fromS(DdbKeyFactory.requestPk(requestId)),
-                ATTR_SK, AttributeValue.fromS(DdbKeyFactory.metaSk()),
-                "requestId", AttributeValue.fromS(requestId),
+                ATTR_REQUEST_ID, AttributeValue.fromS(requestId), // ✅ PK-only (requestId)
                 "eventId", AttributeValue.fromS(eventId),
                 "userId", AttributeValue.fromS(userId),
                 "status", AttributeValue.fromS("RECEIVED"),
                 "requestedAt", AttributeValue.fromN(Long.toString(requestedAt)),
                 "eventType", AttributeValue.fromS(eventType.name()),
-
                 "ttl", AttributeValue.fromN(Long.toString(ttlEpochSeconds))
         );
 
         PutItemRequest req = PutItemRequest.builder()
                 .tableName(tableName)
                 .item(item)
-                .conditionExpression("attribute_not_exists(PK)")
+                .conditionExpression("attribute_not_exists(requestId)")
                 .build();
 
         try {
@@ -68,14 +62,12 @@ public class RequestStateRepository {
         } catch (ConditionalCheckFailedException e) {
             // 이미 있으면 그냥 통과 (중복 생성 방지)
         }
-
     }
 
     public void markQueued(String requestId, long queuedAtMillis) {
 
         Map<String, AttributeValue> key = Map.of(
-                ATTR_PK, AttributeValue.fromS(DdbKeyFactory.requestPk(requestId)),
-                ATTR_SK, AttributeValue.fromS(DdbKeyFactory.metaSk())
+                ATTR_REQUEST_ID, AttributeValue.fromS(requestId)
         );
 
         UpdateItemRequest req = UpdateItemRequest.builder()
@@ -101,8 +93,7 @@ public class RequestStateRepository {
     public boolean tryAcquireProcessing(String requestId, long startedAtMillis) {
 
         Map<String, AttributeValue> key = Map.of(
-                ATTR_PK, AttributeValue.builder().s(DdbKeyFactory.requestPk(requestId)).build(),
-                ATTR_SK, AttributeValue.builder().s(DdbKeyFactory.metaSk()).build()
+                ATTR_REQUEST_ID, AttributeValue.fromS(requestId)
         );
 
         UpdateItemRequest req = UpdateItemRequest.builder()
@@ -115,9 +106,9 @@ public class RequestStateRepository {
                         "#startedAt", "startedAt"
                 ))
                 .expressionAttributeValues(Map.of(
-                        ":queued", AttributeValue.builder().s("QUEUED").build(),
-                        ":processing", AttributeValue.builder().s("PROCESSING").build(),
-                        ":startedAt", AttributeValue.builder().n(String.valueOf(startedAtMillis)).build()
+                        ":queued", AttributeValue.fromS("QUEUED"),
+                        ":processing", AttributeValue.fromS("PROCESSING"),
+                        ":startedAt", AttributeValue.fromN(String.valueOf(startedAtMillis))
                 ))
                 .build();
 
@@ -128,7 +119,6 @@ public class RequestStateRepository {
             return false;
         }
     }
-
 
     /**
      * PROCESSING -> SUCCEEDED
@@ -155,7 +145,7 @@ public class RequestStateRepository {
                 "REJECTED",
                 "REJECTED",
                 ResultCode.REJECTED_CAPACITY,
-                null, // ✅ REJECT는 failure로 보지 않는 편(분석 일관성)
+                null,
                 finishedAtMillis,
                 null,
                 null
@@ -164,7 +154,6 @@ public class RequestStateRepository {
 
     /**
      * PROCESSING -> FAILED_FINAL
-     * - 실패는 분석을 위해 errorCode/errorMessage도 남긴다(선택)
      */
     public boolean markFailedFinal(
             String requestId,
@@ -186,12 +175,6 @@ public class RequestStateRepository {
         );
     }
 
-
-    /**
-     * 최종 상태 공통 업데이트
-     * - Condition: status = PROCESSING
-     * - Update: status/finishedAt/uiResult/resultCode(+ failureClass?) (+ errorCode/errorMessage?)
-     */
     private boolean updateFinalStatus(
             String requestId,
             String targetStatus,
@@ -203,11 +186,9 @@ public class RequestStateRepository {
             String errorMessage
     ) {
         Map<String, AttributeValue> key = Map.of(
-                ATTR_PK, AttributeValue.builder().s(DdbKeyFactory.requestPk(requestId)).build(),
-                ATTR_SK, AttributeValue.builder().s(DdbKeyFactory.metaSk()).build()
+                ATTR_REQUEST_ID, AttributeValue.fromS(requestId)
         );
 
-        // DDB 안전: 너무 긴 메시지는 잘라서 저장(아이템 사이즈/로그 폭주 방지)
         String safeErrorMessage = truncate(errorMessage, 500);
 
         Map<String, String> names = new HashMap<>();
@@ -218,30 +199,30 @@ public class RequestStateRepository {
         names.put("#uiResult", "uiResult");
         names.put("#resultCode", "resultCode");
 
-        values.put(":processing", AttributeValue.builder().s("PROCESSING").build());
-        values.put(":target", AttributeValue.builder().s(targetStatus).build());
-        values.put(":finishedAt", AttributeValue.builder().n(String.valueOf(finishedAtMillis)).build());
-        values.put(":uiResult", AttributeValue.builder().s(uiResult).build());
-        values.put(":resultCode", AttributeValue.builder().s(resultCode.name()).build());
+        values.put(":processing", AttributeValue.fromS("PROCESSING"));
+        values.put(":target", AttributeValue.fromS(targetStatus));
+        values.put(":finishedAt", AttributeValue.fromN(String.valueOf(finishedAtMillis)));
+        values.put(":uiResult", AttributeValue.fromS(uiResult));
+        values.put(":resultCode", AttributeValue.fromS(resultCode.name()));
 
         String updateExpr =
                 "SET #status = :target, #finishedAt = :finishedAt, #uiResult = :uiResult, #resultCode = :resultCode";
 
         if (failureClass != null) {
             names.put("#failureClass", "failureClass");
-            values.put(":failureClass", AttributeValue.builder().s(failureClass.name()).build());
+            values.put(":failureClass", AttributeValue.fromS(failureClass.name()));
             updateExpr += ", #failureClass = :failureClass";
         }
 
         if (errorCode != null && !errorCode.isBlank()) {
             names.put("#errorCode", "errorCode");
-            values.put(":errorCode", AttributeValue.builder().s(errorCode).build());
+            values.put(":errorCode", AttributeValue.fromS(errorCode));
             updateExpr += ", #errorCode = :errorCode";
         }
 
         if (safeErrorMessage != null && !safeErrorMessage.isBlank()) {
             names.put("#errorMessage", "errorMessage");
-            values.put(":errorMessage", AttributeValue.builder().s(safeErrorMessage).build());
+            values.put(":errorMessage", AttributeValue.fromS(safeErrorMessage));
             updateExpr += ", #errorMessage = :errorMessage";
         }
 
@@ -264,16 +245,18 @@ public class RequestStateRepository {
 
     /**
      * 상태 조회 (선점 실패 시 로깅/분기용)
+     *
+     * ✅ 수정 포인트:
+     * - DynamoDB 일시 장애를 Optional.empty()로 삼키지 않는다
+     * - 상위에서 Retryable로 분류되도록 예외를 그대로 던진다
      */
     public Optional<String> getCurrentStatus(String requestId) {
 
+        Map<String, AttributeValue> key = Map.of(
+                ATTR_REQUEST_ID, AttributeValue.fromS(requestId)
+        );
+
         try {
-
-            Map<String, AttributeValue> key = Map.of(
-                    ATTR_PK, AttributeValue.builder().s(DdbKeyFactory.requestPk(requestId)).build(),
-                    ATTR_SK, AttributeValue.builder().s(DdbKeyFactory.metaSk()).build()
-            );
-
             GetItemRequest request = GetItemRequest.builder()
                     .tableName(tableName)
                     .key(key)
@@ -292,12 +275,11 @@ public class RequestStateRepository {
             return Optional.ofNullable(item.get("status"))
                     .map(AttributeValue::s);
 
-        } catch (Exception e) {
-            // 상태 조회 실패 → 안전하게 empty 처리
-            return Optional.empty();
+        } catch (DynamoDbException e) {
+            // ✅ 일시 장애는 상위에서 Retryable로 처리되도록 그대로 던진다
+            throw e;
         }
     }
-
 
     private static String truncate(String s, int maxLen) {
         if (s == null) return null;
@@ -308,8 +290,7 @@ public class RequestStateRepository {
     public boolean releaseProcessingToQueued(String requestId) {
 
         Map<String, AttributeValue> key = Map.of(
-                ATTR_PK, AttributeValue.fromS(DdbKeyFactory.requestPk(requestId)),
-                ATTR_SK, AttributeValue.fromS(DdbKeyFactory.metaSk())
+                ATTR_REQUEST_ID, AttributeValue.fromS(requestId)
         );
 
         UpdateItemRequest req = UpdateItemRequest.builder()
@@ -332,24 +313,19 @@ public class RequestStateRepository {
         }
     }
 
-    // dlq전략수정 : "내가 선점했던 PROCESSING만" 안전하게 QUEUED로 롤백하기 위한 오버로드(권장)
-    // - startedAt(내가 기록했던 startedAt)까지 조건에 포함시켜 경합 시 다른 워커의 PROCESSING을 롤백하는 위험을 줄인다.
-    // - lastRetryAt을 같이 기록해 운영 시 추적성을 높인다.
-    public boolean releaseProcessingToQueued(String requestId, long startedAtMillis) { //dlq전략수정
+    public boolean releaseProcessingToQueued(String requestId, long startedAtMillis) {
 
         Map<String, AttributeValue> key = Map.of(
-                ATTR_PK, AttributeValue.fromS(DdbKeyFactory.requestPk(requestId)),
-                ATTR_SK, AttributeValue.fromS(DdbKeyFactory.metaSk())
+                ATTR_REQUEST_ID, AttributeValue.fromS(requestId)
         );
 
-        long now = System.currentTimeMillis(); //dlq전략수정
+        long now = System.currentTimeMillis();
 
         UpdateItemRequest req = UpdateItemRequest.builder()
                 .tableName(tableName)
                 .key(key)
-                // status=PROCESSING 이면서 startedAt이 내가 선점한 startedAt과 동일할 때만 롤백 //dlq전략수정
-                .conditionExpression("#status = :processing AND #startedAt = :startedAt") //dlq전략수정
-                .updateExpression("SET #status = :queued, lastRetryAt = :now") //dlq전략수정
+                .conditionExpression("#status = :processing AND #startedAt = :startedAt")
+                .updateExpression("SET #status = :queued, lastRetryAt = :now")
                 .expressionAttributeNames(Map.of(
                         "#status", "status",
                         "#startedAt", "startedAt"
@@ -357,8 +333,8 @@ public class RequestStateRepository {
                 .expressionAttributeValues(Map.of(
                         ":processing", AttributeValue.fromS("PROCESSING"),
                         ":queued", AttributeValue.fromS("QUEUED"),
-                        ":startedAt", AttributeValue.fromN(Long.toString(startedAtMillis)), //dlq전략수정
-                        ":now", AttributeValue.fromN(Long.toString(now)) //dlq전략수정
+                        ":startedAt", AttributeValue.fromN(Long.toString(startedAtMillis)),
+                        ":now", AttributeValue.fromN(Long.toString(now))
                 ))
                 .build();
 
@@ -369,6 +345,4 @@ public class RequestStateRepository {
             return false;
         }
     }
-
-
 }

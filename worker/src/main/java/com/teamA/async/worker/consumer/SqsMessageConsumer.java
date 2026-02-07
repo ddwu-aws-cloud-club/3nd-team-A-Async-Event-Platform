@@ -188,188 +188,193 @@ public class SqsMessageConsumer {
             }
         }
 
-        // Worker 책임 — 항상 실행
-        boolean first = idempotencyRepository.tryLock(
-                payload.eventId(),
-                payload.userId(),
-                payload.requestId()
-        );
+        // ================================
+        // ✅ [수정] 상태 생성/전이까지 포함해서
+        //    "분류 try/catch" 아래로 통일
+        // ================================
+        try {
 
-        if (!first) {
-            log.info("[DUPLICATE] skip requestId={}", payload.requestId());
-            if (duplicateSkipCounter != null) duplicateSkipCounter.increment(); //dlq 전략수정
-            deleteMessage(message);
-            return;
-        }
+            // Worker 책임 — 항상 실행
+            boolean first = idempotencyRepository.tryLock(
+                    payload.eventId(),
+                    payload.userId(),
+                    payload.requestId()
+            );
 
-        log.info("[LOCKED] requestId={} eventId={} userId={}",
-                payload.requestId(),
-                payload.eventId(),
-                payload.userId());
-
-        // 최초 상태 생성
-        requestStateRepository.createReceived(
-                payload.requestId(),
-                payload.eventId(),
-                payload.userId(),
-                payload.eventType(),
-                payload.queuedAt()
-        );
-
-        // QUEUED 기록
-        requestStateRepository.markQueued(
-                payload.requestId(),
-                payload.queuedAt()
-        );
-
-        // 3) QUEUED -> PROCESSING 선점
-        boolean acquired = requestStateRepository.tryAcquireProcessing(payload.requestId(), startedAt);
-        if (!acquired) {
-            Optional<String> cur = requestStateRepository.getCurrentStatus(payload.requestId());
-
-            if (cur.isEmpty()) {
-                log.info("[SKIP] requestId={} no item found, attempt={} (ghost msg -> ack)", payload.requestId(), attempt);
+            if (!first) {
+                log.info("[DUPLICATE] skip requestId={}", payload.requestId());
+                if (duplicateSkipCounter != null) duplicateSkipCounter.increment(); //dlq 전략수정
                 deleteMessage(message);
                 return;
             }
 
-            String status = cur.get();
-            switch (status) {
-                case "RECEIVED":
-                    // [수정] RECEIVED 무한 defer 방지
-                    if (attempt <= MAX_RECEIVED_RETRY) {
-                        log.info("[DEFER] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
-                        deferMessage(message, VISIBILITY_DELAY_SECONDS);
+            log.info("[LOCKED] requestId={} eventId={} userId={}",
+                    payload.requestId(),
+                    payload.eventId(),
+                    payload.userId());
+
+            // 최초 상태 생성
+            requestStateRepository.createReceived(
+                    payload.requestId(),
+                    payload.eventId(),
+                    payload.userId(),
+                    payload.eventType(),
+                    payload.queuedAt()
+            );
+
+            // QUEUED 기록
+            requestStateRepository.markQueued(
+                    payload.requestId(),
+                    payload.queuedAt()
+            );
+
+            // 3) QUEUED -> PROCESSING 선점
+            boolean acquired = requestStateRepository.tryAcquireProcessing(payload.requestId(), startedAt);
+            if (!acquired) {
+                Optional<String> cur = requestStateRepository.getCurrentStatus(payload.requestId());
+
+                if (cur.isEmpty()) {
+                    log.info("[SKIP] requestId={} no item found, attempt={} (ghost msg -> ack)", payload.requestId(), attempt);
+                    deleteMessage(message);
+                    return;
+                }
+
+                String status = cur.get();
+                switch (status) {
+                    case "RECEIVED":
+                        // [수정] RECEIVED 무한 defer 방지
+                        if (attempt <= MAX_RECEIVED_RETRY) {
+                            log.info("[DEFER] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
+                            deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                            return;
+                        }
+
+                        long finishedAt = System.currentTimeMillis();
+                        boolean updated = requestStateRepository.markFailedFinal(
+                                payload.requestId(),
+                                finishedAt,
+                                ResultCode.FAILED_INGEST_ENQUEUE,
+                                FailureClass.NON_RETRYABLE,
+                                "STALE_RECEIVED",
+                                "Request stuck in RECEIVED state"
+                        );
+
+                        publisher.publish(buildEvent(
+                                payload, attempt, IS_DLQ,
+                                startedAt, finishedAt,
+                                RequestStatus.FAILED_FINAL,
+                                ResultCode.FAILED_INGEST_ENQUEUE,
+                                new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "STALE_RECEIVED", "Exceeded RECEIVED retry limit"),
+                                false
+                        ));
+
+                        log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (STALE_RECEIVED)",
+                                payload.requestId(), updated, attempt);
+
+                        String nonRetryableReasonCode = "STALE_RECEIVED"; //dlq 전략수정 : undefined symbol 해결
+
+                        if (nonRetryableDlqCounter != null) nonRetryableDlqCounter.increment();
+                        meterRegistry.counter("non_retryable_dlq_count", "reasonCode", nonRetryableReasonCode)
+                                .increment();
+
+                        log.error("[DLQ SEND] reasonCode={} requestId={} eventId={} userId={} attempt={} messageId={}",
+                                nonRetryableReasonCode, payload.requestId(), payload.eventId(), payload.userId(), attempt, message.messageId());
+
+                        // dlq전략수정 : NonRetryable은 즉시 DLQ 전송 + ACK (send 실패 시 delete까지 가지 않아서 재시도됨)
+                        dlqSender.send(
+                                message.body(),
+                                message.messageId(),
+                                attempt,
+                                "NON_RETRYABLE",
+                                nonRetryableReasonCode,
+                                Map.of(
+                                        "requestId", payload.requestId(),
+                                        "eventId", payload.eventId(),
+                                        "userId", payload.userId()
+                                )
+                        );
+
+                        deleteMessage(message);
                         return;
-                    }
-
-                    long finishedAt = System.currentTimeMillis();
-                    boolean updated = requestStateRepository.markFailedFinal(
-                            payload.requestId(),
-                            finishedAt,
-                            ResultCode.FAILED_INGEST_ENQUEUE,
-                            FailureClass.NON_RETRYABLE,
-                            "STALE_RECEIVED",
-                            "Request stuck in RECEIVED state"
-                    );
-
-                    publisher.publish(buildEvent(
-                            payload, attempt, IS_DLQ,
-                            startedAt, finishedAt,
-                            RequestStatus.FAILED_FINAL,
-                            ResultCode.FAILED_INGEST_ENQUEUE,
-                            new ParticipationProcessedFailure(FailureClass.NON_RETRYABLE, "STALE_RECEIVED", "Exceeded RECEIVED retry limit"),
-                            false
-                    ));
-
-                    log.warn("[FAILED_FINAL] requestId={} updated={} attempt={} (STALE_RECEIVED)",
-                            payload.requestId(), updated, attempt);
-
-                    String nonRetryableReasonCode = "STALE_RECEIVED"; //dlq 전략수정 : undefined symbol 해결
-
-                    if (nonRetryableDlqCounter != null) nonRetryableDlqCounter.increment();
-                    meterRegistry.counter("non_retryable_dlq_count", "reasonCode", nonRetryableReasonCode)
-                            .increment();
-
-                    log.error("[DLQ SEND] reasonCode={} requestId={} eventId={} userId={} attempt={} messageId={}",
-                            nonRetryableReasonCode, payload.requestId(), payload.eventId(), payload.userId(), attempt, message.messageId());
-
-                    // dlq전략수정 : NonRetryable은 즉시 DLQ 전송 + ACK (send 실패 시 delete까지 가지 않아서 재시도됨)
-                    dlqSender.send(
-                            message.body(),
-                            message.messageId(),
-                            attempt,
-                            "NON_RETRYABLE",
-                            nonRetryableReasonCode,
-                            Map.of(
-                                    "requestId", payload.requestId(),
-                                    "eventId", payload.eventId(),
-                                    "userId", payload.userId()
-                            )
-                    );
-
-                    deleteMessage(message);
-                    return;
-                case "QUEUED":
-                    log.info("[SKIP] requestId={} status={} attempt={} (race/contend -> ack)", payload.requestId(), status, attempt);
-                    finishedAt = System.currentTimeMillis();
-                    publisher.publish(buildEvent(
-                            payload, attempt, IS_DLQ,
-                            startedAt, finishedAt,
-                            RequestStatus.REJECTED,
-                            ResultCode.DUPLICATE_SKIPPED,
-                            null,
-                            true
-                    ));
-                    deleteMessage(message);
-                    return;
-                case "PROCESSING":
-                    // 다른 워커가 처리 중이거나, 이전 시도에서 visibility timeout으로 재수신된 케이스
-                    // ✅ 바로 ACK하면 유실/오판 위험. 잠깐 defer로 밀어줌.
-                    if (attempt <= MAX_RETRYABLE_RETRY) {
-                        log.info("[DEFER] requestId={} status=PROCESSING attempt={} (in-flight -> retry later)",
-                                payload.requestId(), attempt);
-                        deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                    case "QUEUED":
+                        log.info("[SKIP] requestId={} status={} attempt={} (race/contend -> ack)", payload.requestId(), status, attempt);
+                        finishedAt = System.currentTimeMillis();
+                        publisher.publish(buildEvent(
+                                payload, attempt, IS_DLQ,
+                                startedAt, finishedAt,
+                                RequestStatus.REJECTED,
+                                ResultCode.DUPLICATE_SKIPPED,
+                                null,
+                                true
+                        ));
+                        deleteMessage(message);
                         return;
-                    }
+                    case "PROCESSING":
+                        // 다른 워커가 처리 중이거나, 이전 시도에서 visibility timeout으로 재수신된 케이스
+                        // ✅ 바로 ACK하면 유실/오판 위험. 잠깐 defer로 밀어줌.
+                        if (attempt <= MAX_RETRYABLE_RETRY) {
+                            log.info("[DEFER] requestId={} status=PROCESSING attempt={} (in-flight -> retry later)",
+                                    payload.requestId(), attempt);
+                            deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                            return;
+                        }
 
-                    // ✅ 너무 오래 PROCESSING이면 "의미 있는 실패"로 보고 즉시 DLQ + ACK (선택적으로)
-                    long finishedAt2 = System.currentTimeMillis();
-                    requestStateRepository.markFailedFinal(
-                            payload.requestId(),
-                            finishedAt2,
-                            ResultCode.FAILED_WORKER_EXCEPTION,
-                            FailureClass.NON_RETRYABLE,
-                            "STALE_PROCESSING",
-                            "Request stuck in PROCESSING state"
-                    );
+                        // ✅ 너무 오래 PROCESSING이면 "의미 있는 실패"로 보고 즉시 DLQ + ACK (선택적으로)
+                        long finishedAt2 = System.currentTimeMillis();
+                        requestStateRepository.markFailedFinal(
+                                payload.requestId(),
+                                finishedAt2,
+                                ResultCode.FAILED_WORKER_EXCEPTION,
+                                FailureClass.NON_RETRYABLE,
+                                "STALE_PROCESSING",
+                                "Request stuck in PROCESSING state"
+                        );
 
-                    String nonRetryableReasonCode2 = "STALE_PROCESSING"; //dlq 전략수정 : undefined symbol 해결
+                        String nonRetryableReasonCode2 = "STALE_PROCESSING"; //dlq 전략수정 : undefined symbol 해결
 
-                    if (nonRetryableDlqCounter != null) nonRetryableDlqCounter.increment();
-                    meterRegistry.counter("non_retryable_dlq_count", "reasonCode", nonRetryableReasonCode2)
-                            .increment();
+                        if (nonRetryableDlqCounter != null) nonRetryableDlqCounter.increment();
+                        meterRegistry.counter("non_retryable_dlq_count", "reasonCode", nonRetryableReasonCode2)
+                                .increment();
 
-                    log.error("[DLQ SEND] reasonCode={} requestId={} eventId={} userId={} attempt={} messageId={}",
-                            nonRetryableReasonCode2, payload.requestId(), payload.eventId(), payload.userId(), attempt, message.messageId());
+                        log.error("[DLQ SEND] reasonCode={} requestId={} eventId={} userId={} attempt={} messageId={}",
+                                nonRetryableReasonCode2, payload.requestId(), payload.eventId(), payload.userId(), attempt, message.messageId());
 
-                    // dlq전략수정 : NonRetryable은 즉시 DLQ 전송 + ACK
-                    dlqSender.send(
-                            message.body(),
-                            message.messageId(),
-                            attempt,
-                            "NON_RETRYABLE",
-                            nonRetryableReasonCode2,
-                            Map.of(
-                                    "requestId", payload.requestId(),
-                                    "eventId", payload.eventId(),
-                                    "userId", payload.userId()
-                            )
-                    );
-                    deleteMessage(message);
-                    return;
+                        // dlq전략수정 : NonRetryable은 즉시 DLQ 전송 + ACK
+                        dlqSender.send(
+                                message.body(),
+                                message.messageId(),
+                                attempt,
+                                "NON_RETRYABLE",
+                                nonRetryableReasonCode2,
+                                Map.of(
+                                        "requestId", payload.requestId(),
+                                        "eventId", payload.eventId(),
+                                        "userId", payload.userId()
+                                )
+                        );
+                        deleteMessage(message);
+                        return;
 
-                default:
-                    log.info("[SKIP] requestId={} status={} attempt={} (dup -> ack)", payload.requestId(), status, attempt);
-                    finishedAt = System.currentTimeMillis();
-                    publisher.publish(buildEvent(
-                            payload, attempt, IS_DLQ,
-                            startedAt, finishedAt,
-                            RequestStatus.SUCCEEDED,
-                            ResultCode.SUCCESS,
-                            null,
-                            true
-                    ));
-                    deleteMessage(message);
-                    return;
+                    default:
+                        log.info("[SKIP] requestId={} status={} attempt={} (dup -> ack)", payload.requestId(), status, attempt);
+                        finishedAt = System.currentTimeMillis();
+                        publisher.publish(buildEvent(
+                                payload, attempt, IS_DLQ,
+                                startedAt, finishedAt,
+                                RequestStatus.SUCCEEDED,
+                                ResultCode.SUCCESS,
+                                null,
+                                true
+                        ));
+                        deleteMessage(message);
+                        return;
+                }
             }
-        }
 
-        // [추가 로그 1] PROCESSING 선점 성공
-        log.info("[ACQUIRED] requestId={} attempt={} startedAt={}",
-                payload.requestId(), attempt, startedAt);
+            // [추가 로그 1] PROCESSING 선점 성공
+            log.info("[ACQUIRED] requestId={} attempt={} startedAt={}",
+                    payload.requestId(), attempt, startedAt);
 
-        try {
             final long finishedAt;
             final RequestStatus finalStatus;
             final ResultCode resultCode;
