@@ -1,7 +1,7 @@
 FROM eclipse-temurin:21-jre
 WORKDIR /app
 
-# 이미 만들어진 jar만 복사하도록 수정
+# 이미 만들어진 jar만 복사하도록 수정함
 COPY build/libs/*.jar /app/app.jar
 
 EXPOSE 8080
