@@ -13,7 +13,6 @@ import com.teamA.async.worker.ddb.RequestStateRepository;
 import com.teamA.async.worker.ddb.WorkerIdempotencyRepository;
 import com.teamA.async.worker.dlq.DlqSender;
 import com.teamA.async.worker.exception.BusinessRuleViolationException;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -42,7 +41,6 @@ import java.util.concurrent.TimeoutException;
 
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class SqsMessageConsumer {
 
     private final SqsClient sqsClient;
@@ -70,7 +68,8 @@ public class SqsMessageConsumer {
     private static final boolean IS_DLQ = false;
 
     // ★ [수정] RECEIVED 상태에서 바로 ACK하지 않고, 잠깐 뒤 재시도하기 위한 visibility delay
-    private static final int VISIBILITY_DELAY_SECONDS = 2;
+    @Value("${worker.visibility-delay-seconds:2}")
+    private int visibilityDelaySeconds;
 
     // ✅ [수정] RECEIVED 무한 defer 방지용 상한 (attempt 기준)
     private static final int MAX_RECEIVED_RETRY = 3;
@@ -94,8 +93,31 @@ public class SqsMessageConsumer {
     // - poller는 단일
     // - 메시지 처리(handleMessage)만 병렬
     // =========================================================
-    private final ExecutorService executor =
-            Executors.newFixedThreadPool(4);
+    private final ExecutorService executor;
+
+    public SqsMessageConsumer(
+            SqsClient sqsClient,
+            ObjectMapper objectMapper,
+            RequestStateRepository requestStateRepository,
+            EventCapacityRepository eventCapacityRepository,
+            ParticipationEventBridgePublisher publisher,
+            WorkerIdempotencyRepository idempotencyRepository,
+            DlqSender dlqSender,
+            MeterRegistry meterRegistry,
+            @Value("${worker.threads:4}") int workerThreads
+    ) {
+        this.sqsClient = sqsClient;
+        this.objectMapper = objectMapper;
+        this.requestStateRepository = requestStateRepository;
+        this.eventCapacityRepository = eventCapacityRepository;
+        this.publisher = publisher;
+        this.idempotencyRepository = idempotencyRepository;
+        this.dlqSender = dlqSender;
+        this.meterRegistry = meterRegistry;
+
+        this.executor = Executors.newFixedThreadPool(workerThreads);
+    }
+
 
     @PostConstruct //dlq 전략 수정
     public void initMetrics() {
@@ -113,15 +135,21 @@ public class SqsMessageConsumer {
                 .register(meterRegistry); //dlq 전략수정
     }
 
+    @Value("${worker.poll.wait-seconds:5}")
+    private int pollWaitSeconds;
 
-    @Scheduled(fixedDelay = 3000)
+    @Value("${worker.poll.batch-size:5}")
+    private int pollBatchSize;
+
+
+    @Scheduled(fixedDelayString = "${worker.poll.delay-ms:3000}")
     public void pollMessages() {
 
         try {
             ReceiveMessageRequest req = ReceiveMessageRequest.builder()
                     .queueUrl(queueUrl)
-                    .waitTimeSeconds(5) // 응답을 기다리는 시간
-                    .maxNumberOfMessages(5) // 한 번에 가져올 메시지 수
+                    .waitTimeSeconds(pollWaitSeconds)// 응답을 기다리는 시간
+                    .maxNumberOfMessages(pollBatchSize) // 한 번에 가져올 메시지 수
                     .attributeNamesWithStrings("ApproximateReceiveCount")
                     .messageAttributeNames("All")
                     .build();
@@ -245,7 +273,7 @@ public class SqsMessageConsumer {
                         // [수정] RECEIVED 무한 defer 방지
                         if (attempt <= MAX_RECEIVED_RETRY) {
                             log.info("[DEFER] requestId={} status={} attempt={} (wait ingest -> retry)", payload.requestId(), status, attempt);
-                            deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                            deferMessage(message, visibilityDelaySeconds);
                             return;
                         }
 
@@ -315,7 +343,7 @@ public class SqsMessageConsumer {
                         if (attempt <= MAX_RETRYABLE_RETRY) {
                             log.info("[DEFER] requestId={} status=PROCESSING attempt={} (in-flight -> retry later)",
                                     payload.requestId(), attempt);
-                            deferMessage(message, VISIBILITY_DELAY_SECONDS);
+                            deferMessage(message, visibilityDelaySeconds);
                             return;
                         }
 
@@ -663,10 +691,16 @@ public class SqsMessageConsumer {
     }
 
     // [수정] RETRYABLE backoff 계산 (2,4,8,16... 최대 60초)
+    @Value("${worker.retry.base-seconds:2}")
+    private int retryBaseSeconds;
+
+    @Value("${worker.retry.max-seconds:60}")
+    private int retryMaxSeconds;
+
     private int computeRetryableBackoffSeconds(int attempt) {
         int exp = Math.max(0, attempt - 1);
-        long backoff = (long) RETRYABLE_BACKOFF_BASE_SECONDS << exp;
-        if (backoff > RETRYABLE_BACKOFF_MAX_SECONDS) backoff = RETRYABLE_BACKOFF_MAX_SECONDS;
+        long backoff = (long) retryBaseSeconds << exp;
+        if (backoff > retryMaxSeconds) backoff = retryMaxSeconds;
         return (int) backoff;
     }
 

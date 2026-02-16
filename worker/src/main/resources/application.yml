@@ -20,4 +20,18 @@ analytics:
     source: kr.ac.dongduk.worker
     detail-type: ParticipationProcessed
 
+worker:
+  threads: 4
+
+  poll:
+    delay-ms: 3000
+    wait-seconds: 5
+    batch-size: 5
+
+  retry:
+    base-seconds: 2
+    max-seconds: 60
+    max-attempt: 5
+
+  visibility-delay-seconds: 2
 
