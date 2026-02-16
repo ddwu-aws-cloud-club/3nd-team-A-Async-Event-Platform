@@ -13,7 +13,7 @@ public class StateTransitionConfig {
     @Bean
     public StateTransitionService stateTransitionService(
             DynamoDbClient dynamoDbClient,
-            @Value("${ddb.table-name}") String tableName
+            @Value("${ddb.tables.request-state}") String tableName
     ) {
         return new DynamoStateTransitionService(dynamoDbClient, tableName);
     }

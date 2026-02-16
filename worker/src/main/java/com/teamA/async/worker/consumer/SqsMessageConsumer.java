@@ -77,10 +77,6 @@ public class SqsMessageConsumer {
     // ✅ [수정] RETRYABLE 무한 재등장 방지용 상한 (attempt 기준)
     private static final int MAX_RETRYABLE_RETRY = 5;
 
-    // ✅ [수정] RETRYABLE backoff (최대 60초)
-    private static final int RETRYABLE_BACKOFF_BASE_SECONDS = 2;
-    private static final int RETRYABLE_BACKOFF_MAX_SECONDS = 60;
-
     // (옵션) messageAttributes에서 복구할 때 사용할 키(ingest가 messageAttributes로도 넣는다면)
     private static final String MA_REQUEST_ID = "requestId";
     private static final String MA_EVENT_ID   = "eventId";
