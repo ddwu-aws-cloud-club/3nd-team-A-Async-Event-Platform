@@ -14,7 +14,8 @@ public class StateTransitionConfig {
     public StateTransitionService stateTransitionService(
             DynamoDbClient dynamoDbClient,
             @Value("${ddb.table-name}") String tableName
-    ) {
+    )
+    {
         return new DynamoStateTransitionService(dynamoDbClient, tableName);
     }
 }

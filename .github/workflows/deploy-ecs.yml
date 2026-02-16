@@ -44,7 +44,7 @@ jobs:
       AWS_REGION: ap-northeast-2
       CLUSTER: async-cluster
       SERVICE: async-ingest-service-osk300iy
-      TASKDEF_FAMILY: async-ingest
+      TASKDEF_FAMILY: ingest-task          # ✅ 콘솔 family 이름으로 수정
       CONTAINER_NAME: ingest
       ECR_REPO: ingest
 
@@ -94,7 +94,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y jq
 
           aws ecs describe-task-definition \
-            --task-definition $TASKDEF_FAMILY \
+            --task-definition "$TASKDEF_FAMILY" \
             --query taskDefinition > taskdef.json
 
           cat taskdef.json | jq \
@@ -106,21 +106,26 @@ jobs:
 
       - name: Register new task definition revision
         run: |
-          aws ecs register-task-definition --cli-input-json file://taskdef-rendered.json
+          TD_NEW=$(aws ecs register-task-definition \
+            --cli-input-json file://taskdef-rendered.json \
+            --query "taskDefinition.taskDefinitionArn" \
+            --output text)
+          echo "TD_NEW=$TD_NEW" >> $GITHUB_ENV
+          echo "Registered task definition: $TD_NEW"
 
       - name: Update ECS service (force new deployment)
         run: |
           aws ecs update-service \
-            --cluster $CLUSTER \
-            --service $SERVICE \
-            --task-definition $TASKDEF_FAMILY \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --task-definition "$TD_NEW" \
             --force-new-deployment
 
       - name: Wait for service stability
         run: |
           aws ecs wait services-stable \
-            --cluster $CLUSTER \
-            --services $SERVICE
+            --cluster "$CLUSTER" \
+            --services "$SERVICE"
 
   deploy-worker:
     needs: changes
@@ -131,7 +136,7 @@ jobs:
       AWS_REGION: ap-northeast-2
       CLUSTER: async-cluster
       SERVICE: async-worker-service-rvpwspft
-      TASKDEF_FAMILY: async-worker
+      TASKDEF_FAMILY: worker-task          # ✅ 콘솔 family 이름으로 수정
       CONTAINER_NAME: worker
       ECR_REPO: worker
 
@@ -181,7 +186,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y jq
 
           aws ecs describe-task-definition \
-            --task-definition $TASKDEF_FAMILY \
+            --task-definition "$TASKDEF_FAMILY" \
             --query taskDefinition > taskdef.json
 
           cat taskdef.json | jq \
@@ -193,18 +198,23 @@ jobs:
 
       - name: Register new task definition revision
         run: |
-          aws ecs register-task-definition --cli-input-json file://taskdef-rendered.json
+          TD_NEW=$(aws ecs register-task-definition \
+            --cli-input-json file://taskdef-rendered.json \
+            --query "taskDefinition.taskDefinitionArn" \
+            --output text)
+          echo "TD_NEW=$TD_NEW" >> $GITHUB_ENV
+          echo "Registered task definition: $TD_NEW"
 
       - name: Update ECS service (force new deployment)
         run: |
           aws ecs update-service \
-            --cluster $CLUSTER \
-            --service $SERVICE \
-            --task-definition $TASKDEF_FAMILY \
+            --cluster "$CLUSTER" \
+            --service "$SERVICE" \
+            --task-definition "$TD_NEW" \
             --force-new-deployment
 
       - name: Wait for service stability
         run: |
           aws ecs wait services-stable \
-            --cluster $CLUSTER \
-            --services $SERVICE
+            --cluster "$CLUSTER" \
+            --services "$SERVICE"
