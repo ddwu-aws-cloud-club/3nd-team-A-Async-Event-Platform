@@ -1,14 +1,14 @@
 package com.teamA.async.ingest.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.teamA.async.common.domain.enums.EventType;
 import com.teamA.async.common.messaging.ParticipationMessage;
-import com.teamA.async.ingest.api.dto.ParticipationResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.services.sqs.SqsClient;
-import tools.jackson.databind.ObjectMapper;
+
 import java.util.UUID;
 
 @Service
@@ -22,10 +22,10 @@ public class ParticipationService {
     @Value("${sqs.queue-url}")
     private String queueUrl;
 
-    public ParticipationResponse participate(String eventId, String userId, EventType eventType) {
+    public String participate(String eventId, String userId, EventType eventType) {
 
         String requestId = newRequestId();
-        long now= System.currentTimeMillis();
+        long now = System.currentTimeMillis();
 
         try {
             ParticipationMessage msg =
@@ -38,12 +38,10 @@ public class ParticipationService {
                     .messageBody(body)
             );
 
-            return new ParticipationResponse(requestId, false);
+            return requestId;
 
         } catch (Exception e) {
             log.error("SQS enqueue failed", e);
-
-            // ingest는 실패해도 상태관리 안 함 — 그냥 에러만 로그
             throw new RuntimeException("enqueue failed");
         }
     }
