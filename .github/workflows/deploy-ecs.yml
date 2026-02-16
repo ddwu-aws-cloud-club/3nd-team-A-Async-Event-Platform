@@ -3,7 +3,7 @@ name: Deploy to ECS (ingest/worker)
 on:
   push:
     branches: ["main"]
-    
+
 permissions:
   id-token: write
   contents: read
@@ -16,6 +16,8 @@ jobs:
       worker: ${{ steps.filter.outputs.worker }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Detect changed paths
         uses: dorny/paths-filter@v3
@@ -48,6 +50,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v4
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
@@ -130,6 +137,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@v4
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
