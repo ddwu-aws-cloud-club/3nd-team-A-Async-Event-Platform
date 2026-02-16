@@ -9,20 +9,16 @@ management:
 aws:
   region: ${AWS_REGION:ap-northeast-2}
 
-  dynamodb:
-    table-name: ${DDB_TABLE_NAME:AsyncEventTable}
-
 logging:
   level:
     root: INFO
     software.amazon.awssdk: INFO
     com.team.async: DEBUG
 
-ddb:
-  table-name: AsyncEventTable
 
 sqs:
-  queue-url: ${SQS_QUEUE_URL:https://sqs.ap-northeast-2.amazonaws.com/590807098068/AsyncEventMainQueue}
+  queue-url: ${SQS_QUEUE_URL:https://sqs.ap-northeast-2.amazonaws.com/031988646316/async-main-queue}
+  dlq-url: ${DLQ_QUEUE_URL:https://sqs.ap-northeast-2.amazonaws.com/031988646316/async-main-dlq}
 
 security:
   jwt:
