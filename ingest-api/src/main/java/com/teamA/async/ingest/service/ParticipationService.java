@@ -25,7 +25,7 @@ public class ParticipationService {
     public ParticipationResponse participate(String eventId, String userId, EventType eventType) {
 
         String requestId = newRequestId();
-        long now = System.currentTimeMillis();
+        long now= System.currentTimeMillis();
 
         try {
             ParticipationMessage msg =

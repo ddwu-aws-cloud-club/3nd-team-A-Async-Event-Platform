@@ -43,8 +43,8 @@ jobs:
     env:
       AWS_REGION: ap-northeast-2
       CLUSTER: async-cluster
-      SERVICE: async-ingest-service-osk300iy
-      TASKDEF_FAMILY: ingest-task          # ✅ 콘솔 family 이름으로 수정
+      SERVICE: ingest-service
+      TASKDEF_FAMILY: ingest-task
       CONTAINER_NAME: ingest
       ECR_REPO: ingest
 
@@ -135,8 +135,8 @@ jobs:
     env:
       AWS_REGION: ap-northeast-2
       CLUSTER: async-cluster
-      SERVICE: async-worker-service-rvpwspft
-      TASKDEF_FAMILY: worker-task          # ✅ 콘솔 family 이름으로 수정
+      SERVICE: worker-service
+      TASKDEF_FAMILY: worker-task
       CONTAINER_NAME: worker
       ECR_REPO: worker
 
