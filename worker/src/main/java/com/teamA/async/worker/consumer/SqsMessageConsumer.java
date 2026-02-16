@@ -475,7 +475,7 @@ public class SqsMessageConsumer {
             boolean rolledBack = false;
             try {
                 // dlq전략수정 : PROCESSING -> QUEUED 롤백 (RequestStateRepository에 메서드 추가 필요: releaseProcessingToQueued)
-                rolledBack = requestStateRepository.releaseProcessingToQueued(payload.requestId(), startedAt); //dlq 전략수정
+                rolledBack =requestStateRepository.releaseProcessingToQueued(payload.requestId(), startedAt); //dlq 전략수정
             } catch (Exception rollbackEx) {
                 // 롤백 실패는 더 큰 문제(상태 오염 가능). 그래도 ACK는 하지 않는다.
                 log.warn("[ROLLBACK FAIL] requestId={} attempt={} (processing->queued)", payload.requestId(), attempt, rollbackEx);
