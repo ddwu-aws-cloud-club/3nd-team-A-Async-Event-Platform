@@ -20,7 +20,7 @@ public class JwtProvider {
             @Value("${security.jwt.ttl-seconds}") long ttlSeconds
     ) {
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
-        this.ttlMillis = ttlSeconds * 1000L;
+        this.ttlMillis= ttlSeconds * 1000L;
     }
 
     public String issue(String userId, java.util.List<String> roles) {
