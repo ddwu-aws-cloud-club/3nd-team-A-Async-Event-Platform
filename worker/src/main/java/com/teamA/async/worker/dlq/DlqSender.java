@@ -156,11 +156,15 @@ public class DlqSender {
             log.error("[DLQ SEND] failureType={} reasonCode={} keys={} originalQueueMessageId={} receiveCount={} workerVersion={}",
                     failureType, reasonCode, (keys == null ? Map.of() : keys), originalQueueMessageId, receiveCount, workerVersion);
 
-            sqsClient.sendMessage(SendMessageRequest.builder()
+            SendMessageResponse resp = sqsClient.sendMessage(SendMessageRequest.builder()
                     .queueUrl(dlqUrl)
                     .messageBody(body)
                     .messageAttributes(attrs)
                     .build());
+
+            // ✅ DLQ 성공 전송 로그 추가
+            log.info("[DLQ SENT] dlqUrl={} dlqMessageId={} originalQueueMessageId={} reasonCode={}",
+                    dlqUrl, resp.messageId(), originalQueueMessageId, reasonCode);
 
         } catch (Exception e) {
             //dlq전략수정 : DLQ 전송 실패 메트릭(+ reasonCode 태깅)

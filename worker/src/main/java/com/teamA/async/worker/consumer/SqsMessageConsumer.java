@@ -429,6 +429,17 @@ public class SqsMessageConsumer {
             }
 
             publisher.publish(buildEvent(payload, attempt, IS_DLQ, startedAt, finishedAt, finalStatus, resultCode, null, false));
+
+            // ✅ 성공(SUCCEEDED) 1줄 로그 추가
+            if (finalStatus == RequestStatus.SUCCEEDED) {
+                log.info("[SUCCEEDED] requestId={} eventId={} userId={} attempt={} messageId={}",
+                        payload.requestId(),
+                        payload.eventId(),
+                        payload.userId(),
+                        attempt,
+                        message.messageId());
+            }
+
             deleteMessage(message);
 
         } catch (Exception e) {
