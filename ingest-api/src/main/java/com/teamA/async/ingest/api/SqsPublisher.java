@@ -23,16 +23,16 @@ public class SqsPublisher {
     public void publish(String requestId, String userId, Object body) {
         try {
             MessageEnvelope env = new MessageEnvelope(requestId, userId, body);
-
             String json = objectMapper.writeValueAsString(env);
 
             // send 직전 로그
-            String eventId = null;
+            String eventType = null;
             if (body instanceof IngestController.IngestRequest req) {
-                eventId = req.getEventType();
+                eventType = req.getEventType();
             }
-            log.info("[ENQUEUE][TRY] queueUrl={} requestId={} eventId={}",
-                    queueUrl, requestId, eventId);
+
+            log.info("[ENQUEUE][TRY] queueUrl={} requestId={} eventType={}",
+                    queueUrl, requestId, eventType);
 
             SendMessageResponse resp = sqsClient.sendMessage(
                     SendMessageRequest.builder()
@@ -42,8 +42,8 @@ public class SqsPublisher {
             );
 
             // send 성공 직후 로그
-            log.info("[ENQUEUE][OK] queueUrl={} messageId={} requestId={} eventId={}",
-                    queueUrl, resp.messageId(), requestId, eventId);
+            log.info("[ENQUEUE][OK] queueUrl={} messageId={} requestId={} eventType={}",
+                    queueUrl, resp.messageId(), requestId, eventType);
 
         } catch (Exception e) {
             // 예외 발생 시 로그

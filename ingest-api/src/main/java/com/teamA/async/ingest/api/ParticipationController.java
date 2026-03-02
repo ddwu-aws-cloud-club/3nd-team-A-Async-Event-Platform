@@ -15,7 +15,7 @@ import java.util.Map;
 public class ParticipationController {
 
     private final ParticipationService participationService;
-    @PostMapping("api/events/{eventId}/apply")
+    @PostMapping("/api/events/{eventId}/apply")
     public ResponseEntity<?> participate(
             @PathVariable String eventId,
             @RequestParam EventType eventType,
