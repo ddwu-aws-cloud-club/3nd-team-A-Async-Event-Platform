@@ -23,11 +23,30 @@ public class ParticipationController {
     ) {
         if (userId == null) userId = "anonymous";
 
-        String requestId =
-                participationService.participate(eventId, userId, eventType);
+        long startNs = System.nanoTime();
+        String requestId = null;
 
-        return ResponseEntity.accepted()
-                .body(Map.of("requestId", requestId));
+        try {
+            requestId = participationService.participate(eventId, userId, eventType);
+
+            long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
+
+            // "202 능력" 계측 로그 (Metric Filter용)
+            log.info("INGEST_RESULT status=202 latency_ms={} requestId={} userId={} eventId={} eventType={} sqs_ok=true",
+                    latencyMs, requestId, userId, eventId, eventType);
+
+            return ResponseEntity.accepted()
+                    .body(Map.of("requestId", requestId));
+
+        } catch (Exception e) {
+            long latencyMs = (System.nanoTime() - startNs) / 1_000_000;
+
+            // 실패도 같이 찍어야 total 대비 비율이 의미 있음
+            log.error("INGEST_RESULT status=500 latency_ms={} requestId={} userId={} eventId={} eventType={} sqs_ok=false err={}",
+                    latencyMs, requestId, userId, eventId, eventType, e.getClass().getSimpleName());
+
+            throw e; // 기존대로 에러 전파
+        }
     }
 
 
